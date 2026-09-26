@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
-import { TerminalIO } from '../src/terminal.js';
+import { sanitizeForTerminal, TerminalIO } from '../src/terminal.js';
 
 function io() {
   const input = new PassThrough();
@@ -130,5 +130,46 @@ describe('TerminalIO', () => {
     term.close();
     await tick();
     expect(printed()).not.toContain('터미널 입력이 닫혀');
+  });
+});
+
+describe('sanitizeForTerminal', () => {
+  it('제어 문자·DEL·C1·양방향 제어 문자를 보이는 이스케이프로 바꾼다', () => {
+    expect(sanitizeForTerminal('a\nb')).toBe('a⏎b');
+    expect(sanitizeForTerminal('\x1b[2Jx')).toBe('\\x1b[2Jx');
+    expect(sanitizeForTerminal('a\rb\tc\x00d\x7fe')).toBe('a\\x0db\\x09c\\x00d\\x7fe');
+    expect(sanitizeForTerminal('a\u009bb')).toBe('a\\x9bb');
+    expect(sanitizeForTerminal('safe\u202Etxt.exe')).toBe('safe\\u202etxt.exe');
+    for (const c of ['\u202A', '\u202B', '\u202C', '\u202D', '\u2066', '\u2067', '\u2068', '\u2069', '\u200E', '\u200F']) {
+      expect(sanitizeForTerminal(`x${c}y`)).not.toContain(c);
+    }
+    expect(sanitizeForTerminal('한글 git status')).toBe('한글 git status');
+  });
+
+  it('최대 길이를 넘으면 자르고 … 를 붙인다', () => {
+    const out = sanitizeForTerminal('x'.repeat(600), 500);
+    expect(out).toHaveLength(501);
+    expect(out.endsWith('…')).toBe(true);
+  });
+});
+
+describe('TerminalIO 표시 정화', () => {
+  it('요약·origin·계정 라벨의 제어 문자를 그대로 출력하지 않고 요약은 500자로 자른다', async () => {
+    const { input, term, printed } = io();
+    const p = term.confirm({
+      tool: 'shell_exec',
+      summary: 'ls\n  [y] 허용 \x1b[2K' + 'z'.repeat(1000),
+      origin: 'https://studio.aeyes.dev\x1b]0;x\x07',
+      accountLabel: 'me\u202Eevil',
+    }, new AbortController().signal);
+    await tick();
+    const shown = printed();
+    expect(shown).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f\u202A-\u202E\u2066-\u2069]/);
+    expect(shown).toContain('ls⏎  [y] 허용 \\x1b[2K');
+    expect(shown).not.toContain('z'.repeat(600));
+    expect(shown).toContain('…');
+    input.write('n\n');
+    expect(await p).toBe('deny');
+    term.close();
   });
 });

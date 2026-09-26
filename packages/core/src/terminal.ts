@@ -5,6 +5,28 @@
 import { createInterface, type Interface } from 'node:readline';
 import type { ConfirmDecision, Confirmer, ConfirmRequest } from './policy/confirmer.js';
 
+const SUMMARY_DISPLAY_MAX = 500;
+const LABEL_DISPLAY_MAX = 200;
+
+/**
+ * 원격(웹)에서 온 글을 터미널에 보이기 전에 정화한다. 확인 프롬프트는 마지막 방어선이라
+ * 커서 이동·화면 지우기(ESC), 줄바꿈으로 가짜 프롬프트 만들기, 양방향 문자로 글자 순서 뒤집기를 모두 막는다.
+ * C0/C1 제어 문자·DEL 은 \xHH, 줄바꿈은 ⏎, 양방향 제어 문자는 \uHHHH 로 보인다.
+ */
+export function sanitizeForTerminal(text: string, max?: number): string {
+  const escaped = String(text).replace(
+    /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,
+    (c) => {
+      if (c === '\n') return '⏎';
+      const code = c.charCodeAt(0);
+      return code <= 0xff ? `\\x${code.toString(16).padStart(2, '0')}` : `\\u${code.toString(16).padStart(4, '0')}`;
+    }
+  );
+  if (max === undefined) return escaped;
+  const chars = Array.from(escaped);
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : escaped;
+}
+
 interface Pending {
   req: ConfirmRequest;
   signal: AbortSignal;
@@ -75,10 +97,14 @@ export class TerminalIO implements Confirmer {
     if (!next) return;
     this.active = next;
     const { req } = next;
-    const always = req.alwaysAllowed === true && req.grantKey ? `  [a] 항상 허용 (범위: ${req.grantKey})` : '';
+    const always = req.alwaysAllowed === true && req.grantKey
+      ? `  [a] 항상 허용 (범위: ${sanitizeForTerminal(req.grantKey, LABEL_DISPLAY_MAX)})`
+      : '';
+    const account = sanitizeForTerminal(req.accountLabel || 'AeyeStudio', LABEL_DISPLAY_MAX);
+    const origin = sanitizeForTerminal(req.origin, LABEL_DISPLAY_MAX);
     this.output.write(
-      `\n[확인 필요] ${req.accountLabel || 'AeyeStudio'} (${req.origin})\n` +
-      `  ${req.tool}: ${req.summary}\n` +
+      `\n[확인 필요] ${account} (${origin})\n` +
+      `  ${sanitizeForTerminal(req.tool, LABEL_DISPLAY_MAX)}: ${sanitizeForTerminal(req.summary, SUMMARY_DISPLAY_MAX)}\n` +
       `  [y] 허용${always}  [N] 거부 > `
     );
   }
