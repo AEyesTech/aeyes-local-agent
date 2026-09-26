@@ -5,6 +5,7 @@ import ExcelJS from 'exceljs';
 import { z } from 'zod';
 import { ToolError } from '../errors.js';
 import { resolveAllowedPath } from '../paths.js';
+import { writeChecked } from './fs.js';
 import { defineTool, jsonResult, type ToolDef } from './types.js';
 
 type Cell = string | number | boolean | null;
@@ -92,10 +93,12 @@ export function createExcelTools(): ToolDef[] {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet(args.sheet ?? 'Sheet1');
       worksheet.addRows(args.rows);
+      const buffer = Buffer.from(isCsv(file) ? await workbook.csv.writeBuffer() : await workbook.xlsx.writeBuffer());
       await mkdir(path.dirname(file), { recursive: true });
-      if (isCsv(file)) await workbook.csv.writeFile(file);
-      else await workbook.xlsx.writeFile(file);
-      return jsonResult({ path: file, written: true, rows: args.rows.length });
+      // TOCTOU 방어: 쓰기 직전에 경로 재검사, 새 파일은 배타적 생성(심어진 링크를 따라가지 않음)
+      const rechecked = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: exists });
+      await writeChecked(rechecked, buffer, exists);
+      return jsonResult({ path: rechecked, written: true, rows: args.rows.length });
     },
   });
 

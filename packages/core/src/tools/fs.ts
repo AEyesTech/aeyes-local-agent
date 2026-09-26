@@ -45,6 +45,21 @@ async function readHead(file: string, bytes: number): Promise<Buffer> {
   }
 }
 
+/**
+ * 검사를 마친 경로에 쓴다. 새 파일이면 'wx'(배타적 생성)로 열어, 검사와 쓰기 사이에 심어진
+ * 심볼릭 링크를 따라가지 않고 실패하게 한다. 덮어쓰기는 호출자가 쓰기 직전에 realpath 로 재검사한다.
+ */
+export async function writeChecked(target: string, data: Buffer, overwrite: boolean): Promise<void> {
+  try {
+    await writeFile(target, data, { flag: overwrite ? 'w' : 'wx' });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new ToolError('failed', '쓰는 사이에 같은 경로에 파일이 생겼습니다. 다시 시도하세요');
+    }
+    throw error;
+  }
+}
+
 export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }): ToolDef[] {
   const fsList = defineTool({
     name: 'fs_list',
@@ -147,14 +162,15 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
       const target = await resolveAllowedPath(args.path, ctx.allowedDirs);
       const data = Buffer.from(args.content, args.encoding === 'base64' ? 'base64' : 'utf8');
       if (data.length > WRITE_MAX_BYTES) throw new ToolError('too_large', '10MB를 넘는 파일은 쓸 수 없습니다');
-      if (await exists(target)) {
+      const existed = await exists(target);
+      if (existed) {
         if ((await stat(target)).isDirectory()) throw new ToolError('invalid_argument', '폴더 경로입니다');
         if (!(await ctx.confirm(`덮어쓰기: ${target}`))) throw new ToolError('denied_locally', '사용자가 PC 에서 거부했습니다');
       }
       await mkdir(path.dirname(target), { recursive: true });
-      // TOCTOU 방어: 부모 디렉토리 생성 후 경로 재검사
-      const recheckedTarget = await resolveAllowedPath(args.path, ctx.allowedDirs);
-      await writeFile(recheckedTarget, data);
+      // TOCTOU 방어: 부모 디렉토리 생성 후(덮어쓰기면 확인 대기 후) 쓰기 직전에 경로 재검사
+      const recheckedTarget = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: existed });
+      await writeChecked(recheckedTarget, data, existed);
       return jsonResult({ path: recheckedTarget, written: true, bytes: data.length });
     },
   });

@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { createFsTools } from '../src/tools/fs.js';
+import { createFsTools, writeChecked } from '../src/tools/fs.js';
 import type { ToolContext, ToolDef } from '../src/tools/types.js';
 
 async function setup(confirmAnswer = true) {
@@ -159,5 +159,40 @@ describe('쓰기 도구', () => {
     expect(JSON.parse((result.result.content[0] as { text: string }).text)).toMatchObject({ error: 'path_not_allowed' });
     // 파일이 실제로는 생성되지 않았는지 확인 (symlink 를 통해 밖에 기록되지 않았는지)
     expect(await readFile(linkPath, 'utf8').catch(() => 'not_found')).toBe('not_found');
+  });
+});
+
+describe('끊어진 심볼릭 링크로 밖에 쓰기', () => {
+  it.skipIf(process.platform === 'win32')('fs_write 는 밖을 가리키는 끊어진 링크에 쓰지 않는다', async () => {
+    const { allowed, run } = await setup();
+    const outside = path.join(path.dirname(allowed), 'outside');
+    await mkdir(outside);
+    await symlink(path.join(outside, 'planted.txt'), path.join(allowed, 'dangling.txt'));
+    const { result, json } = await run('fs_write', { path: 'dangling.txt', content: 'pwned' });
+    expect(result.isError).toBe(true);
+    expect(json.error).toBe('path_not_allowed');
+    await expect(access(path.join(outside, 'planted.txt'))).rejects.toThrow();
+  });
+
+  it.skipIf(process.platform === 'win32')('fs_mkdir 도 끊어진 링크를 거부한다', async () => {
+    const { allowed, run } = await setup();
+    const outside = path.join(path.dirname(allowed), 'outside');
+    await mkdir(outside);
+    await symlink(path.join(outside, 'nodir'), path.join(allowed, 'dlink'));
+    const { json } = await run('fs_mkdir', { path: 'dlink/x' });
+    expect(json.error).toBe('path_not_allowed');
+    await expect(access(path.join(outside, 'nodir'))).rejects.toThrow();
+  });
+});
+
+describe('writeChecked (배타적 생성)', () => {
+  it.skipIf(process.platform === 'win32')('새 파일 쓰기 사이에 심어진 링크는 따라가지 않고 실패한다', async () => {
+    const { allowed } = await setup();
+    const outside = path.join(path.dirname(allowed), 'outside2');
+    await mkdir(outside);
+    const target = path.join(allowed, 'race.txt');
+    await symlink(path.join(outside, 'planted.txt'), target);
+    await expect(writeChecked(target, Buffer.from('x'), false)).rejects.toMatchObject({ code: 'failed' });
+    await expect(access(path.join(outside, 'planted.txt'))).rejects.toThrow();
   });
 });

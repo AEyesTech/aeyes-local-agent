@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -52,5 +52,25 @@ describe('excel 도구', () => {
     const { r } = await run('excel_write', { path: 'p.xlsx', rows: [['y']] });
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(r.isError).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('excel_write 는 밖을 가리키는 끊어진 링크에 쓰지 않는다', async () => {
+    const { run, allowed } = await setup();
+    const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'aeyes-xl-out-')));
+    await symlink(path.join(outside, 'planted.xlsx'), path.join(allowed, 'd.xlsx'));
+    await symlink(path.join(outside, 'planted.csv'), path.join(allowed, 'd.csv'));
+    for (const p of ['d.xlsx', 'd.csv']) {
+      const { r, json } = await run('excel_write', { path: p, rows: [['x']] });
+      expect(r.isError).toBe(true);
+      expect(json.error).toBe('path_not_allowed');
+    }
+    await expect(access(path.join(outside, 'planted.xlsx'))).rejects.toThrow();
+    await expect(access(path.join(outside, 'planted.csv'))).rejects.toThrow();
+  });
+
+  it('csv 쓰기 → 읽기 왕복(새 파일)', async () => {
+    const { run } = await setup();
+    expect((await run('excel_write', { path: 'n.csv', rows: [['a', 'b'], [1, 2]] })).json).toMatchObject({ written: true });
+    expect((await run('excel_read', { path: 'n.csv' })).json.rows).toEqual([['a', 'b'], [1, 2]]);
   });
 });

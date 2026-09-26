@@ -59,6 +59,18 @@ describe('resolveAllowedPath', () => {
     await expect(resolveAllowedPath('link/secret.txt', [allowed])).rejects.toMatchObject({ code: 'path_not_allowed' });
   });
 
+  it.skipIf(process.platform === 'win32')('밖을 가리키는 끊어진 심볼릭 링크(잎)는 path_not_allowed', async () => {
+    const { allowed, outside } = await sandbox();
+    await symlink(path.join(outside, 'planted.txt'), path.join(allowed, 'dangling.txt'));
+    await expect(resolveAllowedPath('dangling.txt', [allowed])).rejects.toMatchObject({ code: 'path_not_allowed' });
+  });
+
+  it.skipIf(process.platform === 'win32')('중간 경로가 끊어진 심볼릭 링크여도 path_not_allowed', async () => {
+    const { allowed, outside } = await sandbox();
+    await symlink(path.join(outside, 'nodir'), path.join(allowed, 'dlink'));
+    await expect(resolveAllowedPath('dlink/new/file.txt', [allowed])).rejects.toMatchObject({ code: 'path_not_allowed' });
+  });
+
   it('없는 파일은 mustExist 면 not_found, 아니면 가장 가까운 상위 기준으로 해석', async () => {
     const { allowed } = await sandbox();
     await expect(resolveAllowedPath('nope.txt', [allowed], { mustExist: true })).rejects.toMatchObject({ code: 'not_found' });
