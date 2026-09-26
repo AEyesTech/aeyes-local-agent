@@ -1,0 +1,79 @@
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { isAllowedRoot, isWithin, resolveAllowedPath } from '../src/paths.js';
+import { ToolError } from '../src/errors.js';
+
+async function sandbox() {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'aeyes-paths-')));
+  const allowed = path.join(root, 'allowed');
+  const outside = path.join(root, 'outside');
+  await mkdir(allowed);
+  await mkdir(outside);
+  await writeFile(path.join(allowed, 'a.txt'), 'a');
+  await writeFile(path.join(outside, 'secret.txt'), 's');
+  return { root, allowed, outside };
+}
+
+describe('isWithin', () => {
+  it('자기 자신과 하위는 true, 형제·상위는 false', () => {
+    expect(isWithin('/a/b', '/a/b', 'linux')).toBe(true);
+    expect(isWithin('/a/b/c', '/a/b', 'linux')).toBe(true);
+    expect(isWithin('/a/bc', '/a/b', 'linux')).toBe(false);
+    expect(isWithin('/a', '/a/b', 'linux')).toBe(false);
+  });
+  it('이름이 ..으로 시작하는 하위 폴더는 하위로 본다', () => {
+    expect(isWithin('/a/b/..hidden/x', '/a/b', 'linux')).toBe(true);
+  });
+  it('case-insensitive on darwin', () => {
+    expect(isWithin('/Users/A/Documents/AeyeStudio/x', '/users/a/documents/aeyestudio', 'darwin')).toBe(true);
+    expect(isWithin('/Users/A/Documents/AeyeStudio/x', '/users/a/documents/aeyestudio', 'linux')).toBe(false);
+  });
+  it('Windows 는 드라이브·대소문자를 무시하고 다른 드라이브·UNC 는 밖', () => {
+    expect(isWithin('C:\\Users\\A\\Docs\\x.txt', 'c:\\users\\a\\docs', 'win32')).toBe(true);
+    expect(isWithin('D:\\Users\\A\\Docs\\x.txt', 'C:\\Users\\A\\Docs', 'win32')).toBe(false);
+    expect(isWithin('\\\\server\\share\\x', 'C:\\Users\\A\\Docs', 'win32')).toBe(false);
+  });
+});
+
+describe('resolveAllowedPath', () => {
+  it('상대 경로는 첫 허용 폴더 기준', async () => {
+    const { allowed } = await sandbox();
+    expect(await resolveAllowedPath('a.txt', [allowed])).toBe(path.join(allowed, 'a.txt'));
+  });
+
+  it('../ 로 빠져나가면 path_not_allowed', async () => {
+    const { allowed } = await sandbox();
+    await expect(resolveAllowedPath('../outside/secret.txt', [allowed])).rejects.toMatchObject({ code: 'path_not_allowed' });
+  });
+
+  it('절대 경로가 허용 폴더 밖이면 거부', async () => {
+    const { allowed, outside } = await sandbox();
+    await expect(resolveAllowedPath(path.join(outside, 'secret.txt'), [allowed])).rejects.toBeInstanceOf(ToolError);
+  });
+
+  it.skipIf(process.platform === 'win32')('밖을 가리키는 심볼릭 링크는 거부', async () => {
+    const { allowed, outside } = await sandbox();
+    await symlink(outside, path.join(allowed, 'link'));
+    await expect(resolveAllowedPath('link/secret.txt', [allowed])).rejects.toMatchObject({ code: 'path_not_allowed' });
+  });
+
+  it('없는 파일은 mustExist 면 not_found, 아니면 가장 가까운 상위 기준으로 해석', async () => {
+    const { allowed } = await sandbox();
+    await expect(resolveAllowedPath('nope.txt', [allowed], { mustExist: true })).rejects.toMatchObject({ code: 'not_found' });
+    expect(await resolveAllowedPath('new/dir/file.txt', [allowed])).toBe(path.join(allowed, 'new', 'dir', 'file.txt'));
+  });
+
+  it('빈 문자열·NUL 문자는 invalid_argument', async () => {
+    const { allowed } = await sandbox();
+    await expect(resolveAllowedPath('', [allowed])).rejects.toMatchObject({ code: 'invalid_argument' });
+    await expect(resolveAllowedPath('a\0b', [allowed])).rejects.toMatchObject({ code: 'invalid_argument' });
+  });
+
+  it('isAllowedRoot 는 허용 폴더 자체만 true', async () => {
+    const { allowed } = await sandbox();
+    expect(await isAllowedRoot(allowed, [allowed])).toBe(true);
+    expect(await isAllowedRoot(path.join(allowed, 'a.txt'), [allowed])).toBe(false);
+  });
+});
