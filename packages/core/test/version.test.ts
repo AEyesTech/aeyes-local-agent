@@ -8,6 +8,14 @@ describe('version', () => {
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
     expect(AGENT_VERSION).toBe(pkg.version);
   });
+
+  it('npm 배포 설정: 공개 접근, 배포 전 빌드, 사내 코드 라이선스', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    expect(pkg.publishConfig).toEqual({ access: 'public' });
+    expect(pkg.scripts.prepublishOnly).toBe('pnpm build');
+    expect(pkg.license).toBe('UNLICENSED');
+    expect(pkg.repository).toBeUndefined();
+  });
 });
 
 describe('ToolError', () => {

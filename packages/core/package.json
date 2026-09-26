@@ -2,6 +2,7 @@
   "name": "@aeyes/local-agent",
   "version": "0.1.0",
   "description": "AeyeStudio 내 PC 연결용 로컬 MCP 에이전트",
+  "license": "UNLICENSED",
   "type": "module",
   "bin": { "aeyes-local-agent": "dist/cli.js" },
   "main": "dist/index.js",
@@ -9,10 +10,12 @@
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "files": ["dist"],
   "engines": { "node": ">=20" },
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "pnpm build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
