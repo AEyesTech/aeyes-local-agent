@@ -152,8 +152,10 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
         if (!(await ctx.confirm(`덮어쓰기: ${target}`))) throw new ToolError('denied_locally', '사용자가 PC 에서 거부했습니다');
       }
       await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, data);
-      return jsonResult({ path: target, written: true, bytes: data.length });
+      // TOCTOU 방어: 부모 디렉토리 생성 후 경로 재검사
+      const recheckedTarget = await resolveAllowedPath(args.path, ctx.allowedDirs);
+      await writeFile(recheckedTarget, data);
+      return jsonResult({ path: recheckedTarget, written: true, bytes: data.length });
     },
   });
 
@@ -166,8 +168,10 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     summarize: (a) => String(a.path),
     handler: async (args, ctx) => {
       const target = await resolveAllowedPath(args.path, ctx.allowedDirs);
-      await mkdir(target, { recursive: true });
-      return jsonResult({ path: target, created: true });
+      // TOCTOU 방어: 경로 재검사 후 생성
+      const recheckedTarget = await resolveAllowedPath(args.path, ctx.allowedDirs);
+      await mkdir(recheckedTarget, { recursive: true });
+      return jsonResult({ path: recheckedTarget, created: true });
     },
   });
 
@@ -186,10 +190,14 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
       const from = await resolveAllowedPath(args.from, ctx.allowedDirs, { mustExist: true });
       const to = await resolveAllowedPath(args.to, ctx.allowedDirs);
       if (await isAllowedRoot(from, ctx.allowedDirs)) throw new ToolError('invalid_argument', '허용 폴더 자체는 옮길 수 없습니다');
+      if (await isAllowedRoot(to, ctx.allowedDirs)) throw new ToolError('invalid_argument', '허용 폴더 자체로는 옮길 수 없습니다');
       if ((await exists(to)) && args.overwrite !== true) throw new ToolError('invalid_argument', '대상 경로가 이미 있습니다');
       await mkdir(path.dirname(to), { recursive: true });
-      await rename(from, to);
-      return jsonResult({ from, to, moved: true });
+      // TOCTOU 방어: 부모 디렉토리 생성 후 경로 재검사
+      const recheckedFrom = await resolveAllowedPath(args.from, ctx.allowedDirs, { mustExist: true });
+      const recheckedTo = await resolveAllowedPath(args.to, ctx.allowedDirs);
+      await rename(recheckedFrom, recheckedTo);
+      return jsonResult({ from: recheckedFrom, to: recheckedTo, moved: true });
     },
   });
 

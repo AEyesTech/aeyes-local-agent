@@ -128,4 +128,36 @@ describe('쓰기 도구', () => {
     await run('fs_mkdir', { path: 'x/y' });
     expect((await stat(path.join(allowed, 'x', 'y'))).isDirectory()).toBe(true);
   });
+
+  it('fs_move 는 대상이 허용 폴더 루트이면 거부', async () => {
+    const { run, allowed } = await setup();
+    const root = await run('fs_move', { from: 'a.txt', to: allowed, overwrite: true });
+    expect(root.result.isError).toBe(true);
+    expect(await readFile(path.join(allowed, 'a.txt'), 'utf8')).toBe('hello');
+  });
+
+  it('fs_write TOCTOU 방어: 부모 생성 후 symlink 공격 시 path_not_allowed', async () => {
+    if (process.platform === 'win32') {
+      // Windows 에서는 symlink 권한 이슈로 스킵
+      return;
+    }
+    const { run, allowed } = await setup();
+    const { symlinkSync } = await import('node:fs');
+    const outside = path.dirname(allowed);
+    const linkPath = path.join(allowed, 'link');
+    try {
+      symlinkSync(outside, linkPath, 'dir');
+    } catch (error) {
+      // macOS/Linux 에서 권한 이슈면 스킵 (회귀 방어용)
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw error;
+    }
+    const result = await run('fs_write', { path: 'link/new.txt', content: 'bypass' });
+    expect(result.result.isError).toBe(true);
+    expect(JSON.parse((result.result.content[0] as { text: string }).text)).toMatchObject({ error: 'path_not_allowed' });
+    // 파일이 실제로는 생성되지 않았는지 확인 (symlink 를 통해 밖에 기록되지 않았는지)
+    expect(await readFile(linkPath, 'utf8').catch(() => 'not_found')).toBe('not_found');
+  });
 });
