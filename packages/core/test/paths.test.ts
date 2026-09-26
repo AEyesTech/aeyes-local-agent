@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isAllowedRoot, isWithin, resolveAllowedPath } from '../src/paths.js';
+import { isAllowedRoot, isWithin, resolveAllowedPath, unsafeAllowedDirReason } from '../src/paths.js';
 import { ToolError } from '../src/errors.js';
 
 async function sandbox() {
@@ -110,5 +110,33 @@ describe('resolveAllowedPath', () => {
     const { allowed } = await sandbox();
     expect(await isAllowedRoot(allowed, [allowed])).toBe(true);
     expect(await isAllowedRoot(path.join(allowed, 'a.txt'), [allowed])).toBe(false);
+  });
+});
+
+describe('설정 폴더 제외(deniedDirs)', () => {
+  it('허용 폴더 안이라도 deniedDirs 안이면 path_not_allowed', async () => {
+    const { allowed } = await sandbox();
+    const cfg = path.join(allowed, '.aeyes-agent');
+    await mkdir(cfg);
+    await writeFile(path.join(cfg, 'config.json'), '{}');
+    await expect(resolveAllowedPath('.aeyes-agent/config.json', [allowed], { deniedDirs: [cfg] })).rejects.toMatchObject({ code: 'path_not_allowed' });
+    await expect(resolveAllowedPath('.aeyes-agent/new.txt', [allowed], { deniedDirs: [cfg] })).rejects.toMatchObject({ code: 'path_not_allowed' });
+    await expect(resolveAllowedPath('.AEYES-AGENT', [allowed], { deniedDirs: [cfg] })).rejects.toMatchObject({ code: process.platform === 'linux' ? 'not_found' : 'path_not_allowed' });
+    expect(await resolveAllowedPath('a.txt', [allowed], { deniedDirs: [cfg] })).toBe(path.join(allowed, 'a.txt'));
+  });
+});
+
+describe('unsafeAllowedDirReason', () => {
+  const posix = { home: '/Users/a', configDir: '/Users/a/.aeyes-agent', platform: 'darwin' as const };
+  const win = { home: 'C:\\Users\\a', configDir: 'C:\\Users\\a\\AppData\\Roaming\\aeyes-agent', platform: 'win32' as const };
+  it('루트·홈·홈 상위·설정 폴더 포함은 거부', () => {
+    for (const d of ['/', '/Users', '/Users/a', '/USERS/A']) expect(unsafeAllowedDirReason(d, posix), d).not.toBeNull();
+    for (const d of ['C:\\', 'D:\\', 'C:\\Users', 'c:\\users\\A', '\\\\server\\share\\']) expect(unsafeAllowedDirReason(d, win), d).not.toBeNull();
+    expect(unsafeAllowedDirReason('C:\\Users\\a\\AppData', win)).not.toBeNull();
+  });
+  it('홈 아래의 일반 폴더는 허용', () => {
+    expect(unsafeAllowedDirReason('/Users/a/Documents/AeyeStudio', posix)).toBeNull();
+    expect(unsafeAllowedDirReason('/Volumes/Data/shop', posix)).toBeNull();
+    expect(unsafeAllowedDirReason('C:\\Users\\a\\Documents\\AeyeStudio', win)).toBeNull();
   });
 });

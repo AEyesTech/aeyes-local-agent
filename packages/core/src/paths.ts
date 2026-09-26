@@ -72,7 +72,7 @@ async function realAllowedDirs(allowedDirs: string[]): Promise<string[]> {
 export async function resolveAllowedPath(
   input: string,
   allowedDirs: string[],
-  opts: { mustExist?: boolean; realpathFn?: (p: string) => Promise<string> } = {}
+  opts: { mustExist?: boolean; realpathFn?: (p: string) => Promise<string>; deniedDirs?: string[] } = {}
 ): Promise<string> {
   if (typeof input !== 'string' || input.trim() === '' || input.includes('\0')) {
     throw new ToolError('invalid_argument', '경로가 비어 있거나 올바르지 않습니다');
@@ -85,6 +85,13 @@ export async function resolveAllowedPath(
   if (!roots.some((root) => isWithin(real, root))) {
     throw new ToolError('path_not_allowed', `허용된 폴더 밖의 경로입니다: ${input}`);
   }
+  // 허용 폴더 안이라도 에이전트 설정 폴더(페어링 해시·항상 허용·감사 로그)는 도구로 건드릴 수 없다.
+  if (opts.deniedDirs && opts.deniedDirs.length > 0) {
+    const denied = await realAllowedDirs(opts.deniedDirs);
+    if (denied.some((d) => isWithin(real, d))) {
+      throw new ToolError('path_not_allowed', `허용된 폴더 밖의 경로입니다: ${input}`);
+    }
+  }
   // 끊어진 심볼릭 링크(잎이든 중간이든)는 따라가면 밖에 쓸 수 있으므로 거부한다.
   if (dangling) throw new ToolError('path_not_allowed', `끊어진 심볼릭 링크는 사용할 수 없습니다: ${input}`);
   if (opts.mustExist && !exists) throw new ToolError('not_found', `파일이 없습니다: ${input}`);
@@ -95,4 +102,21 @@ export async function resolveAllowedPath(
 export async function isAllowedRoot(real: string, allowedDirs: string[]): Promise<boolean> {
   const roots = await realAllowedDirs(allowedDirs);
   return roots.some((root) => isWithin(real, root) && isWithin(root, real));
+}
+
+/**
+ * 허용 폴더로 쓰기에 너무 넓은 경로인지. 파일시스템 루트, 홈 폴더 자체나 그 상위, 설정 폴더를 포함하는 폴더면 이유를 돌려준다.
+ * 인자는 가능하면 realpath 로 정규화해서 넘긴다.
+ */
+export function unsafeAllowedDirReason(
+  dir: string,
+  opts: { home: string; configDir: string; platform?: NodeJS.Platform }
+): string | null {
+  const platform = opts.platform ?? process.platform;
+  const p = pathApi(platform);
+  const resolved = p.resolve(dir);
+  if (p.parse(resolved).root === resolved) return '파일시스템 루트는 허용 폴더로 쓸 수 없습니다';
+  if (isWithin(opts.home, resolved, platform)) return '홈 폴더 자체나 그 상위 폴더는 허용 폴더로 쓸 수 없습니다';
+  if (isWithin(opts.configDir, resolved, platform)) return '에이전트 설정 폴더를 포함하는 폴더는 허용 폴더로 쓸 수 없습니다';
+  return null;
 }

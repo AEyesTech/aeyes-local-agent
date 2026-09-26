@@ -14,6 +14,8 @@ export interface ToolResult {
 
 export interface ToolContext {
   allowedDirs: string[];
+  /** 허용 폴더 안이라도 접근을 막을 폴더(에이전트 설정 폴더). */
+  deniedDirs?: string[];
   /** overwrite 규칙 도구가 덮어쓰기 직전에 부른다. false 면 실행하지 않는다. */
   confirm(summary: string): Promise<boolean>;
 }

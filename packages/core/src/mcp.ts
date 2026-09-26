@@ -17,7 +17,7 @@ export interface RequestIdentity {
 
 export function createMcpServer(
   tools: ToolDef[],
-  deps: { allowedDirs: string[]; gate: ConfirmationGate; audit: AuditLog; identity: RequestIdentity }
+  deps: { allowedDirs: string[]; deniedDirs?: string[]; gate: ConfirmationGate; audit: AuditLog; identity: RequestIdentity }
 ): McpServer {
   const server = new McpServer({ name: 'aeyes-local-agent', version: AGENT_VERSION });
   for (const tool of tools) {
@@ -45,7 +45,7 @@ export function createMcpServer(
           result = errorResult('denied_locally', '사용자가 PC 에서 거부했습니다');
           outcome = 'denied';
         } else {
-          result = await tool.run(args, { allowedDirs: deps.allowedDirs, confirm: ask });
+          result = await tool.run(args, { allowedDirs: deps.allowedDirs, deniedDirs: deps.deniedDirs, confirm: ask });
           const errorCode = result.isError ? safeErrorCode(result) : null;
           outcome = !result.isError ? 'ok' : errorCode === 'denied_locally' ? 'denied' : 'error';
         }

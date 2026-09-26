@@ -2,12 +2,12 @@
  * 허용 폴더 파일 도구. 모든 경로는 resolveAllowedPath 를 거친다.
  * 삭제는 휴지통으로 보낸다(되돌릴 수 있게).
  */
-import { mkdir, open, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import trashDefault from 'trash';
 import { z } from 'zod';
 import { ToolError } from '../errors.js';
-import { isAllowedRoot, resolveAllowedPath } from '../paths.js';
+import { isAllowedRoot, isWithin, resolveAllowedPath } from '../paths.js';
 import { defineTool, jsonResult, type ToolDef } from './types.js';
 
 export interface FsDeps {
@@ -69,7 +69,7 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     confirm: 'never',
     summarize: (a) => String(a.path ?? '.'),
     handler: async (args, ctx) => {
-      const dir = await resolveAllowedPath(args.path ?? ctx.allowedDirs[0], ctx.allowedDirs, { mustExist: true });
+      const dir = await resolveAllowedPath(args.path ?? ctx.allowedDirs[0], ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
       const names = (await readdir(dir)).slice(0, LIST_MAX);
       const entries = await Promise.all(names.map(async (name) => {
         const s = await stat(path.join(dir, name)).catch(() => null);
@@ -87,7 +87,7 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     confirm: 'never',
     summarize: (a) => String(a.path),
     handler: async (args, ctx) => {
-      const target = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: true });
+      const target = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
       const s = await stat(target);
       return jsonResult({ path: target, type: entryType(s), size: s.size, mtime: s.mtime.toISOString() });
     },
@@ -101,7 +101,7 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     confirm: 'never',
     summarize: (a) => String(a.path),
     handler: async (args, ctx) => {
-      const target = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: true });
+      const target = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
       const s = await stat(target);
       if (!s.isFile()) throw new ToolError('invalid_argument', '파일이 아닙니다');
       const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
@@ -129,15 +129,18 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     confirm: 'never',
     summarize: (a) => String(a.query),
     handler: async (args, ctx) => {
-      const start = await resolveAllowedPath(args.path ?? ctx.allowedDirs[0], ctx.allowedDirs, { mustExist: true });
+      const start = await resolveAllowedPath(args.path ?? ctx.allowedDirs[0], ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
       const needle = args.query.toLowerCase();
       const matches: string[] = [];
+      // 설정 폴더 안은 검색하지 않는다(이름도 드러내지 않게).
+      const denied = await Promise.all((ctx.deniedDirs ?? []).map((d) => realpath(d).catch(() => path.resolve(d))));
       const walk = async (dir: string, depth: number): Promise<void> => {
         if (depth > SEARCH_MAX_DEPTH || matches.length >= SEARCH_MAX) return;
         const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
         for (const entry of entries) {
           if (matches.length >= SEARCH_MAX) return;
           const full = path.join(dir, entry.name);
+          if (denied.some((d) => isWithin(full, d))) continue;
           if (entry.name.toLowerCase().includes(needle)) matches.push(full);
           if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(full, depth + 1);
         }
@@ -159,7 +162,7 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     confirm: 'overwrite',
     summarize: (a) => `덮어쓰기: ${String(a.path)}`,
     handler: async (args, ctx) => {
-      const target = await resolveAllowedPath(args.path, ctx.allowedDirs);
+      const target = await resolveAllowedPath(args.path, ctx.allowedDirs, { deniedDirs: ctx.deniedDirs });
       const data = Buffer.from(args.content, args.encoding === 'base64' ? 'base64' : 'utf8');
       if (data.length > WRITE_MAX_BYTES) throw new ToolError('too_large', '10MB를 넘는 파일은 쓸 수 없습니다');
       const existed = await exists(target);
@@ -169,7 +172,7 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
       }
       await mkdir(path.dirname(target), { recursive: true });
       // TOCTOU 방어: 부모 디렉토리 생성 후(덮어쓰기면 확인 대기 후) 쓰기 직전에 경로 재검사
-      const recheckedTarget = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: existed });
+      const recheckedTarget = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: existed, deniedDirs: ctx.deniedDirs });
       await writeChecked(recheckedTarget, data, existed);
       return jsonResult({ path: recheckedTarget, written: true, bytes: data.length });
     },
@@ -183,9 +186,9 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     confirm: 'never',
     summarize: (a) => String(a.path),
     handler: async (args, ctx) => {
-      const target = await resolveAllowedPath(args.path, ctx.allowedDirs);
+      const target = await resolveAllowedPath(args.path, ctx.allowedDirs, { deniedDirs: ctx.deniedDirs });
       // TOCTOU 방어: 경로 재검사 후 생성
-      const recheckedTarget = await resolveAllowedPath(args.path, ctx.allowedDirs);
+      const recheckedTarget = await resolveAllowedPath(args.path, ctx.allowedDirs, { deniedDirs: ctx.deniedDirs });
       await mkdir(recheckedTarget, { recursive: true });
       return jsonResult({ path: recheckedTarget, created: true });
     },
@@ -203,15 +206,15 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     confirm: 'always',
     summarize: (a) => `${String(a.from)} → ${String(a.to)}`,
     handler: async (args, ctx) => {
-      const from = await resolveAllowedPath(args.from, ctx.allowedDirs, { mustExist: true });
-      const to = await resolveAllowedPath(args.to, ctx.allowedDirs);
+      const from = await resolveAllowedPath(args.from, ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
+      const to = await resolveAllowedPath(args.to, ctx.allowedDirs, { deniedDirs: ctx.deniedDirs });
       if (await isAllowedRoot(from, ctx.allowedDirs)) throw new ToolError('invalid_argument', '허용 폴더 자체는 옮길 수 없습니다');
       if (await isAllowedRoot(to, ctx.allowedDirs)) throw new ToolError('invalid_argument', '허용 폴더 자체로는 옮길 수 없습니다');
       if ((await exists(to)) && args.overwrite !== true) throw new ToolError('invalid_argument', '대상 경로가 이미 있습니다');
       await mkdir(path.dirname(to), { recursive: true });
       // TOCTOU 방어: 부모 디렉토리 생성 후 경로 재검사
-      const recheckedFrom = await resolveAllowedPath(args.from, ctx.allowedDirs, { mustExist: true });
-      const recheckedTo = await resolveAllowedPath(args.to, ctx.allowedDirs);
+      const recheckedFrom = await resolveAllowedPath(args.from, ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
+      const recheckedTo = await resolveAllowedPath(args.to, ctx.allowedDirs, { deniedDirs: ctx.deniedDirs });
       await rename(recheckedFrom, recheckedTo);
       return jsonResult({ from: recheckedFrom, to: recheckedTo, moved: true });
     },
@@ -225,7 +228,7 @@ export function createFsTools(deps: FsDeps = { trash: (p) => trashDefault(p) }):
     confirm: 'always',
     summarize: (a) => `삭제(휴지통): ${String(a.path)}`,
     handler: async (args, ctx) => {
-      const target = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: true });
+      const target = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
       if (await isAllowedRoot(target, ctx.allowedDirs)) throw new ToolError('invalid_argument', '허용 폴더 자체는 지울 수 없습니다');
       await deps.trash(target);
       return jsonResult({ path: target, trashed: true });

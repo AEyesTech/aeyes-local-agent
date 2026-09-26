@@ -58,7 +58,7 @@ export function createOpenTools(deps: OpenDeps = defaultDeps): ToolDef[] {
         if (/^[a-z][a-z0-9+.-]*:\/\//i.test(args.target)) {
           throw new ToolError('invalid_argument', 'http(s) 주소나 허용 폴더 경로만 열 수 있습니다');
         }
-        const target = await resolveAllowedPath(args.target, ctx.allowedDirs, { mustExist: true });
+        const target = await resolveAllowedPath(args.target, ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
         // 입력 이름과 링크를 따라간 실제 경로 모두 검사한다.
         if (isLauncher(args.target) || isLauncher(target)) {
           throw new ToolError('invalid_argument', '실행 파일·실행기 형식은 open_path 로 열 수 없습니다');

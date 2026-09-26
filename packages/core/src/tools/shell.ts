@@ -53,7 +53,7 @@ export function createShellTools(): ToolDef[] {
       confirm: 'always',
       summarize: (a) => String(a.command ?? ''),
       handler: async (args, ctx) => {
-        const cwd = await resolveAllowedPath(args.cwd ?? ctx.allowedDirs[0], ctx.allowedDirs, { mustExist: true });
+        const cwd = await resolveAllowedPath(args.cwd ?? ctx.allowedDirs[0], ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
         const shell = shellInvocation();
         const timeoutMs = (args.timeoutSec ?? DEFAULT_TIMEOUT_SEC) * 1000;
         return new Promise((resolve) => {

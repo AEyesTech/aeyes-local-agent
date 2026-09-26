@@ -43,7 +43,7 @@ export function createExcelTools(): ToolDef[] {
     confirm: 'never',
     summarize: (a) => String(a.path),
     handler: async (args, ctx) => {
-      const file = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: true });
+      const file = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: true, deniedDirs: ctx.deniedDirs });
       const workbook = new ExcelJS.Workbook();
       let worksheet: ExcelJS.Worksheet | undefined;
       if (isCsv(file)) {
@@ -85,7 +85,7 @@ export function createExcelTools(): ToolDef[] {
     confirm: 'overwrite',
     summarize: (a) => `덮어쓰기: ${String(a.path)}`,
     handler: async (args, ctx) => {
-      const file = await resolveAllowedPath(args.path, ctx.allowedDirs);
+      const file = await resolveAllowedPath(args.path, ctx.allowedDirs, { deniedDirs: ctx.deniedDirs });
       const exists = await stat(file).then(() => true, () => false);
       if (exists && !(await ctx.confirm(`덮어쓰기: ${file}`))) {
         throw new ToolError('denied_locally', '사용자가 PC 에서 거부했습니다');
@@ -96,7 +96,7 @@ export function createExcelTools(): ToolDef[] {
       const buffer = Buffer.from(isCsv(file) ? await workbook.csv.writeBuffer() : await workbook.xlsx.writeBuffer());
       await mkdir(path.dirname(file), { recursive: true });
       // TOCTOU 방어: 쓰기 직전에 경로 재검사, 새 파일은 배타적 생성(심어진 링크를 따라가지 않음)
-      const rechecked = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: exists });
+      const rechecked = await resolveAllowedPath(args.path, ctx.allowedDirs, { mustExist: exists, deniedDirs: ctx.deniedDirs });
       await writeChecked(rechecked, buffer, exists);
       return jsonResult({ path: rechecked, written: true, rows: args.rows.length });
     },

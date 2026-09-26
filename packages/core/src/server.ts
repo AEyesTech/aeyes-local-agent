@@ -120,7 +120,9 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
     if (pathname === '/pair' && req.method === 'POST') {
       let body: Record<string, unknown>;
       try {
-        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        const value: unknown = JSON.parse(await readBody(req));
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return sendJson(res, 400, { error: 'invalid_json' });
+        body = value as Record<string, unknown>;
       } catch (error) {
         if (error instanceof BodyTooLargeError) return sendJson(res, 413, { error: 'too_large' });
         return sendJson(res, 400, { error: 'invalid_json' });
@@ -157,6 +159,7 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
       void pairing.touch(record.id).catch(() => undefined);
       const mcp = createMcpServer(tools, {
         allowedDirs: store.get().allowedDirs,
+        deniedDirs: [store.dir],
         gate,
         audit,
         identity: { origin, pairingId: record.id, accountLabel: record.accountLabel },

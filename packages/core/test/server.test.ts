@@ -113,6 +113,16 @@ describe('보안 검사', () => {
     expect((await send()).status).toBe(423);
   });
 
+  it('/pair 본문이 객체가 아니면(null·배열·숫자) 400 invalid_json', async () => {
+    const { base, agent: a } = await boot();
+    a.pairing.createCode();
+    for (const body of ['null', '[]', '42', '"x"']) {
+      const res = await fetch(`${base}/pair`, { method: 'POST', headers: { origin: ORIGIN, 'content-type': 'application/json' }, body });
+      expect(res.status, body).toBe(400);
+      expect((await res.json()).error).toBe('invalid_json');
+    }
+  });
+
   it('본문 2MB 초과는 413', async () => {
     const { base, agent: a } = await boot();
     const token = await pair(base, a);
@@ -168,6 +178,24 @@ describe('MCP', () => {
     expect(JSON.parse((result.content as Array<{ text: string }>)[0].text).error).toBe('denied_locally');
     expect(seen[0]).toMatch(/^shell_exec\|node -e .*\|ky\*\*\*@gmail\.com$/);
     await expect(readFile(path.join(allowed, 'ran.txt'), 'utf8')).rejects.toThrow();
+    await client.close();
+  });
+
+  it('설정 폴더가 허용 폴더 안에 있어도 파일 도구로 접근할 수 없다', async () => {
+    const { base, agent: a, store, home } = await boot();
+    await store.update((c) => { c.allowedDirs = [home]; });
+    const client = await mcpClient(base, await pair(base, a));
+    for (const [name, args] of [
+      ['fs_read', { path: '.a/config.json' }],
+      ['fs_write', { path: '.a/config.json', content: '{}' }],
+      ['fs_write', { path: '.a/new.txt', content: 'x' }],
+      ['fs_list', { path: '.a' }],
+    ] as const) {
+      const r = await client.callTool({ name, arguments: args });
+      expect(JSON.parse((r.content as Array<{ text: string }>)[0].text).error, `${name} ${JSON.stringify(args)}`).toBe('path_not_allowed');
+    }
+    const search = await client.callTool({ name: 'fs_search', arguments: { query: 'config' } });
+    expect(JSON.parse((search.content as Array<{ text: string }>)[0].text).matches).toEqual([]);
     await client.close();
   });
 

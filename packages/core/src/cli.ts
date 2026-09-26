@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 /**
  * npx @aeyes/local-agent 진입점.
- * 시작하면 포트와 페어링 코드를 보여 주고, p=새 코드, u=전체 해제, q=종료 명령을 받는다.
+ * 시작하면 포트와 페어링 코드를 보여 주고, p=새 코드, u=전체 해제, g=항상 허용 목록, r=항상 허용 초기화, q=종료 명령을 받는다.
  */
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
-import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { readFile, realpath, unlink, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { ConfigStore, defaultConfigDir, DEFAULT_PORT, PORT_RANGE_END } from './config.js';
 import { autoAllowConfirmer } from './policy/confirmer.js';
-import { startAgent } from './server.js';
-import { TerminalIO } from './terminal.js';
+import { unsafeAllowedDirReason } from './paths.js';
+import { startAgent as defaultStartAgent } from './server.js';
+import { sanitizeForTerminal, TerminalIO } from './terminal.js';
 import { AGENT_VERSION } from './version.js';
 
 export interface CliArgs {
@@ -21,6 +23,8 @@ export interface CliArgs {
   autoConfirm: boolean;
   configDir?: string;
 }
+
+const COMMANDS = 'p = 새 페어링 코드, u = 모든 연결 해제, g = 항상 허용 목록, r = 항상 허용 초기화, q = 종료';
 
 const HELP = `사용법: aeyes-local-agent [옵션]
        aeyes-local-agent unpair --all
@@ -33,7 +37,7 @@ const HELP = `사용법: aeyes-local-agent [옵션]
   --auto-confirm         로컬 확인 자동 허용(--dev 에서만)
   --version, --help
 
-실행 중 명령: p = 새 페어링 코드, u = 모든 연결 해제, q = 종료`;
+실행 중 명령: ${COMMANDS}`;
 
 export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = { command: 'start', allowDirs: [], dev: false, autoConfirm: false };
@@ -98,7 +102,26 @@ async function readRunningPid(configDir: string): Promise<number | null> {
 
 type Io = { input: NodeJS.ReadableStream; output: NodeJS.WritableStream; error: NodeJS.WritableStream };
 
-export async function main(argv: string[], io: Io = { input: process.stdin, output: process.stdout, error: process.stderr }): Promise<number> {
+/** 테스트에서 바꿔 끼울 수 있는 의존성. */
+export interface MainDeps {
+  startAgent?: typeof defaultStartAgent;
+}
+
+const realOrResolved = (p: string) => realpath(p).catch(() => path.resolve(p));
+
+function startErrorMessage(error: unknown): string {
+  if ((error as NodeJS.ErrnoException)?.code === 'EADDRINUSE') {
+    return `포트 ${DEFAULT_PORT}~${PORT_RANGE_END} 이 모두 사용 중이라 시작할 수 없습니다. 다른 프로그램을 종료하거나 이미 실행 중인 에이전트를 확인하세요.`;
+  }
+  return `에이전트를 시작할 수 없습니다: ${error instanceof Error ? error.message : String(error)}`;
+}
+
+export async function main(
+  argv: string[],
+  io: Io = { input: process.stdin, output: process.stdout, error: process.stderr },
+  deps: MainDeps = {}
+): Promise<number> {
+  const startAgent = deps.startAgent ?? defaultStartAgent;
   let args: CliArgs;
   try {
     args = parseArgs(argv);
@@ -133,6 +156,26 @@ export async function main(argv: string[], io: Io = { input: process.stdin, outp
     return 0;
   }
 
+  // 같은 설정 폴더로 두 번째 에이전트를 띄우지 않는다(설정·pid 파일 경합). 자기 pid 는 오래된 파일로 본다.
+  const livePid = await readRunningPid(store.dir);
+  if (livePid !== null && livePid !== process.pid) {
+    io.error.write(`이미 에이전트가 실행 중입니다(pid ${livePid}). 실행 중인 터미널을 사용하거나 먼저 종료하세요.\n`);
+    return 1;
+  }
+
+  // 너무 넓은 허용 폴더는 받지 않는다(루트·홈·홈 상위·설정 폴더를 포함하는 폴더).
+  if (args.allowDirs.length > 0) {
+    const home = await realOrResolved(homedir());
+    const configDir = await realOrResolved(store.dir);
+    for (const dir of args.allowDirs) {
+      const reason = unsafeAllowedDirReason(await realOrResolved(dir), { home, configDir });
+      if (reason) {
+        io.error.write(`--allow-dir ${dir} 는 쓸 수 없습니다: ${reason}\n`);
+        return 1;
+      }
+    }
+  }
+
   if (args.port !== undefined || args.allowDirs.length > 0) {
     await store.update((c) => {
       if (args.port !== undefined) c.port = args.port;
@@ -141,7 +184,14 @@ export async function main(argv: string[], io: Io = { input: process.stdin, outp
   }
 
   const terminal = new TerminalIO(io.input, io.output);
-  const agent = await startAgent({ store, confirmer: args.autoConfirm ? autoAllowConfirmer : terminal, dev: args.dev });
+  let agent: Awaited<ReturnType<typeof defaultStartAgent>>;
+  try {
+    agent = await startAgent({ store, confirmer: args.autoConfirm ? autoAllowConfirmer : terminal, dev: args.dev });
+  } catch (error) {
+    terminal.close();
+    io.error.write(`${startErrorMessage(error)}\n`);
+    return 1;
+  }
   const pidFile = path.join(store.dir, PID_FILE);
   await writeFile(pidFile, String(process.pid), 'utf8');
   const showCode = () => {
@@ -153,7 +203,7 @@ export async function main(argv: string[], io: Io = { input: process.stdin, outp
     `허용 폴더: ${store.get().allowedDirs.join(', ')}\n` +
     (args.dev ? '개발 모드(localhost origin 허용)\n' : '') +
     (args.autoConfirm ? '⚠ 로컬 확인 자동 허용 중(개발 전용)\n' : '') +
-    '명령: p = 새 페어링 코드, u = 모든 연결 해제, q = 종료\n'
+    `명령: ${COMMANDS}\n`
   );
   showCode();
 
@@ -167,9 +217,24 @@ export async function main(argv: string[], io: Io = { input: process.stdin, outp
     terminal.onCommand((line) => {
       const cmd = line.toLowerCase();
       if (cmd === 'p') showCode();
-      else if (cmd === 'u') void agent.pairing.revokeAll().then((n) => io.output.write(`연결 ${n}개를 해제했습니다.\n`));
-      else if (cmd === 'q') void shutdown();
-      else io.output.write('명령: p = 새 페어링 코드, u = 모든 연결 해제, q = 종료\n');
+      else if (cmd === 'u') {
+        void agent.pairing.revokeAll().then(
+          (n) => io.output.write(`연결 ${n}개를 해제했습니다.\n`),
+          (error: unknown) => io.error.write(`연결 해제에 실패했습니다: ${(error as Error)?.message ?? String(error)}\n`)
+        );
+      } else if (cmd === 'g') {
+        const grants = store.get().alwaysAllow;
+        io.output.write(grants.length === 0
+          ? '항상 허용 없음\n'
+          : `항상 허용 ${grants.length}개:\n${grants.map((g) => `  - ${sanitizeForTerminal(g.key, 200)} (${sanitizeForTerminal(g.createdAt, 40)})`).join('\n')}\n`);
+      } else if (cmd === 'r') {
+        let count = 0;
+        void store.update((c) => { count = c.alwaysAllow.length; c.alwaysAllow = []; }).then(
+          () => io.output.write(`항상 허용 ${count}개를 지웠습니다. 이제 모두 다시 묻습니다.\n`),
+          (error: unknown) => io.error.write(`항상 허용 초기화에 실패했습니다: ${(error as Error)?.message ?? String(error)}\n`)
+        );
+      } else if (cmd === 'q') void shutdown();
+      else io.output.write(`명령: ${COMMANDS}\n`);
     });
     if (io.input === process.stdin) {
       process.once('SIGINT', () => void shutdown());
@@ -188,5 +253,11 @@ function isDirectRun(): boolean {
 }
 
 if (isDirectRun()) {
-  main(process.argv.slice(2)).then((code) => process.exit(code));
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (error: unknown) => {
+      process.stderr.write(`${startErrorMessage(error)}\n`);
+      process.exit(1);
+    }
+  );
 }
