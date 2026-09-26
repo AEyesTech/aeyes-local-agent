@@ -27,9 +27,12 @@ export function isWithin(child: string, parent: string, platform: NodeJS.Platfor
 }
 
 /** 실제 경로를 구한다. 없으면 가장 가까운 존재하는 상위의 realpath 에 나머지를 붙인다(exists=false). */
-async function realpathOfNearest(target: string): Promise<{ real: string; exists: boolean }> {
+async function realpathOfNearest(
+  target: string,
+  realpathFn: (p: string) => Promise<string> = realpath
+): Promise<{ real: string; exists: boolean }> {
   try {
-    return { real: await realpath(target), exists: true };
+    return { real: await realpathFn(target), exists: true };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT') throw new ToolError('failed', `경로를 확인할 수 없습니다: ${code ?? 'unknown'}`);
@@ -39,9 +42,13 @@ async function realpathOfNearest(target: string): Promise<{ real: string; exists
   for (;;) {
     const parent = path.dirname(current);
     rest.unshift(path.basename(current));
-    if (parent === current) throw new ToolError('not_found', `경로를 확인할 수 없습니다: ${target}`);
+    if (parent === current) {
+      // 루트에 도달했는데 존재하지 않는다. 해석되지 않은 경로를 반환하여
+      // 허용 폴더 포함 검사에서 path_not_allowed 로 거부하게 한다.
+      return { real: path.resolve(target), exists: false };
+    }
     try {
-      return { real: path.join(await realpath(parent), ...rest), exists: false };
+      return { real: path.join(await realpathFn(parent), ...rest), exists: false };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw new ToolError('failed', '경로를 확인할 수 없습니다');
@@ -58,14 +65,14 @@ async function realAllowedDirs(allowedDirs: string[]): Promise<string[]> {
 export async function resolveAllowedPath(
   input: string,
   allowedDirs: string[],
-  opts: { mustExist?: boolean } = {}
+  opts: { mustExist?: boolean; realpathFn?: (p: string) => Promise<string> } = {}
 ): Promise<string> {
   if (typeof input !== 'string' || input.trim() === '' || input.includes('\0')) {
     throw new ToolError('invalid_argument', '경로가 비어 있거나 올바르지 않습니다');
   }
   if (allowedDirs.length === 0) throw new ToolError('path_not_allowed', '허용된 폴더가 없습니다');
   const absolute = path.isAbsolute(input) ? path.resolve(input) : path.resolve(allowedDirs[0], input);
-  const { real, exists } = await realpathOfNearest(absolute);
+  const { real, exists } = await realpathOfNearest(absolute, opts.realpathFn);
   const roots = await realAllowedDirs(allowedDirs);
   // 허용 여부를 존재 여부보다 먼저 판정한다 — 밖의 경로가 "없음"으로 새어 나가 존재 여부를 알려 주지 않게.
   if (!roots.some((root) => isWithin(real, root))) {

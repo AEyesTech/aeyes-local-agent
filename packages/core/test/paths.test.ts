@@ -71,6 +71,29 @@ describe('resolveAllowedPath', () => {
     await expect(resolveAllowedPath('a\0b', [allowed])).rejects.toMatchObject({ code: 'invalid_argument' });
   });
 
+  it('완전히 없는 루트 경로는 not_found 아니라 path_not_allowed 로 거부', async () => {
+    const { allowed } = await sandbox();
+    // realpathFn 이 항상 ENOENT 를 던지도록 하여 존재하지 않는 루트 경로를 시뮬레이션
+    const mockRealpath = async () => {
+      const err = new Error('ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    };
+    // mustExist: true 일 때 path_not_allowed 로 거부 (not_found 아님)
+    await expect(
+      resolveAllowedPath('/nonexistent-root/path/to/file', [allowed], {
+        mustExist: true,
+        realpathFn: mockRealpath
+      })
+    ).rejects.toMatchObject({ code: 'path_not_allowed' });
+    // mustExist: false 일 때도 path_not_allowed 로 거부
+    await expect(
+      resolveAllowedPath('/nonexistent-root/path/to/file', [allowed], {
+        realpathFn: mockRealpath
+      })
+    ).rejects.toMatchObject({ code: 'path_not_allowed' });
+  });
+
   it('isAllowedRoot 는 허용 폴더 자체만 true', async () => {
     const { allowed } = await sandbox();
     expect(await isAllowedRoot(allowed, [allowed])).toBe(true);
