@@ -65,6 +65,32 @@ describe('shell_exec', () => {
     expect(json.truncated).toBe(true);
   });
 
+  it('한글 출력은 청크 경계에서 깨지지 않는다', async () => {
+    const { run } = await setup();
+    const { json } = await run({ command: node("process.stdout.write('가'.repeat(30000))") });
+    expect(json.stdout).not.toContain('�');
+    expect(Buffer.byteLength(json.stdout, 'utf8')).toBeLessThanOrEqual(SHELL_OUTPUT_MAX);
+    expect(json.truncated).toBe(true);
+  });
+
+  it('64KB 제한은 바이트 기준으로 합산된다(멀티바이트 포함)', async () => {
+    const { run } = await setup();
+    const { json } = await run({ command: node("process.stdout.write('가'.repeat(30000))") });
+    const totalBytes = Buffer.byteLength(json.stdout, 'utf8') + Buffer.byteLength(json.stderr, 'utf8');
+    expect(totalBytes).toBeLessThanOrEqual(SHELL_OUTPUT_MAX);
+  });
+
+  it.skipIf(process.platform === 'win32')('손자 프로세스가 파이프를 물고 있어도 멈추지 않는다', async () => {
+    const { run } = await setup();
+    const started = Date.now();
+    const { json } = await run({
+      command:
+        "node -e \"require('child_process').spawn(process.execPath,['-e','setTimeout(()=>{},20000)'],{stdio:'inherit',detached:true}).unref(); console.log('parent done')\"",
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(json.stdout).toContain('parent done');
+  });
+
   it('timeoutSec 범위 밖은 invalid_argument', async () => {
     const { run } = await setup();
     expect((await run({ command: 'echo x', timeoutSec: 301 })).json.error).toBe('invalid_argument');

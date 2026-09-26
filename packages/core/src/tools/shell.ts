@@ -1,8 +1,9 @@
 /**
- * 셸 명령 실행. cwd 는 허용 폴더 안, 타임아웃이면 프로세스 트리를 종료, 출력은 합산 64KB.
+ * 셸 명령 실행. cwd 는 허용 폴더 안, 타임아웃이면 프로세스 트리를 종료, 출력은 합산 64KB(바이트 기준).
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
 import { resolveAllowedPath } from '../paths.js';
 import { defineTool, jsonResult, type ToolDef } from './types.js';
@@ -10,6 +11,8 @@ import { defineTool, jsonResult, type ToolDef } from './types.js';
 export const SHELL_OUTPUT_MAX = 64 * 1024;
 const DEFAULT_TIMEOUT_SEC = 60;
 const MAX_TIMEOUT_SEC = 300;
+/** 'exit' 이후 'close'(stdio 드레인)를 기다리는 유예 시간. 백그라운드 손자 프로세스가 파이프를 물고 있으면 'close'가 영영 오지 않을 수 있다. */
+const CLOSE_GRACE_MS = 1000;
 
 export function shellInvocation(
   platform: NodeJS.Platform = process.platform,
@@ -60,28 +63,75 @@ export function createShellTools(): ToolDef[] {
             windowsHide: true,
             detached: process.platform !== 'win32',
           });
-          let stdout = '';
-          let stderr = '';
-          let truncated = false;
+          // 청크 경계에서 멀티바이트 문자가 잘리지 않도록 스트림별로 디코더를 유지한다.
+          let stdoutStr = '';
+          let stderrStr = '';
+          let stdoutBytes = 0;
+          let stderrBytes = 0;
+          let stdoutTruncated = false;
+          let stderrTruncated = false;
           let timedOut = false;
+          let settled = false;
+          const stdoutDecoder = new StringDecoder('utf8');
+          const stderrDecoder = new StringDecoder('utf8');
+
           const take = (chunk: Buffer, into: 'stdout' | 'stderr') => {
-            const room = SHELL_OUTPUT_MAX - stdout.length - stderr.length;
-            if (room <= 0) { truncated = true; return; }
-            const text = chunk.toString('utf8');
-            const part = text.length > room ? text.slice(0, room) : text;
-            if (part.length < text.length) truncated = true;
-            if (into === 'stdout') stdout += part; else stderr += part;
+            // 합산 64KB 는 문자열 길이(UTF-16)가 아니라 바이트 기준으로 잰다.
+            const room = SHELL_OUTPUT_MAX - (stdoutBytes + stderrBytes);
+            if (room <= 0) {
+              if (into === 'stdout') stdoutTruncated = true; else stderrTruncated = true;
+              return;
+            }
+            const part = chunk.length > room ? chunk.subarray(0, room) : chunk;
+            const cut = part.length < chunk.length;
+            if (into === 'stdout') {
+              stdoutStr += stdoutDecoder.write(part);
+              stdoutBytes += part.length;
+              if (cut) stdoutTruncated = true;
+            } else {
+              stderrStr += stderrDecoder.write(part);
+              stderrBytes += part.length;
+              if (cut) stderrTruncated = true;
+            }
           };
           child.stdout?.on('data', (c: Buffer) => take(c, 'stdout'));
           child.stderr?.on('data', (c: Buffer) => take(c, 'stderr'));
+
           const timer = setTimeout(() => { timedOut = true; killTree(child.pid); }, timeoutMs);
-          child.on('error', (error) => {
+          let graceTimer: NodeJS.Timeout | undefined;
+
+          const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
+            if (settled) return;
+            settled = true;
             clearTimeout(timer);
-            resolve(jsonResult({ exitCode: null, signal: null, timedOut, truncated, stdout, stderr: `${stderr}${error.message}` }));
+            if (graceTimer) clearTimeout(graceTimer);
+            // 잘리지 않은 스트림만 디코더를 flush 한다 — 잘린 경우 남은 부분 바이트는
+            // 완결되지 않은 문자일 수 있으므로 그대로 버려 깨진 문자가 섞이지 않게 한다.
+            if (!stdoutTruncated) stdoutStr += stdoutDecoder.end();
+            if (!stderrTruncated) stderrStr += stderrDecoder.end();
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            resolve(jsonResult({
+              exitCode,
+              signal,
+              timedOut,
+              truncated: stdoutTruncated || stderrTruncated,
+              stdout: stdoutStr,
+              stderr: stderrStr,
+            }));
+          };
+
+          child.on('error', (error) => {
+            stderrStr += error.message;
+            finish(null, null);
+          });
+          child.on('exit', (exitCode, signal) => {
+            // 손자 프로세스가 stdio 를 물고 있으면 'close' 가 오지 않을 수 있다 —
+            // 짧은 유예 후에도 오지 않으면 지금까지 모은 출력으로 마무리한다.
+            graceTimer = setTimeout(() => finish(exitCode, signal), CLOSE_GRACE_MS);
           });
           child.on('close', (exitCode, signal) => {
-            clearTimeout(timer);
-            resolve(jsonResult({ exitCode, signal, timedOut, truncated, stdout, stderr }));
+            finish(exitCode, signal);
           });
         });
       },
