@@ -156,6 +156,8 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
         if (error instanceof BodyTooLargeError) return sendJson(res, 413, { error: 'too_large' });
         return sendJson(res, 400, { error: 'invalid_json' });
       }
+      // JSON-RPC 배치는 받지 않는다 — 요청 한 번으로 도구 호출·확인 창을 대량으로 띄우는 것을 막는다(속도 제한 우회 방지).
+      if (Array.isArray(parsed)) return sendJson(res, 400, { error: 'batch_not_supported' });
       void pairing.touch(record.id).catch(() => undefined);
       const mcp = createMcpServer(tools, {
         allowedDirs: store.get().allowedDirs,
@@ -166,8 +168,8 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
       });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on('close', () => {
-        void transport.close();
-        void mcp.close();
+        void transport.close().catch(() => undefined);
+        void mcp.close().catch(() => undefined);
       });
       await mcp.connect(transport);
       await transport.handleRequest(req, res, parsed);

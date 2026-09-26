@@ -62,6 +62,22 @@ describe('TerminalIO', () => {
     term.close();
   });
 
+  it('대기 중인 확인이 10개를 넘으면 새 확인은 즉시 거부한다', async () => {
+    const { input, term } = io();
+    const first = term.confirm(req('ls 0'), new AbortController().signal);
+    const queued = Array.from({ length: 10 }, (_, i) => term.confirm(req(`ls ${i + 1}`), new AbortController().signal));
+    const overflow = term.confirm(req('ls 11'), new AbortController().signal);
+    expect(await overflow).toBe('deny');
+    await tick();
+    input.write('y\n');
+    expect(await first).toBe('allow');
+    // 한 자리가 비면 다시 받는다.
+    const again = term.confirm(req('ls 12'), new AbortController().signal);
+    term.close();
+    expect(await Promise.all(queued)).toEqual(Array(10).fill('deny'));
+    expect(await again).toBe('deny');
+  });
+
   it('serializes concurrent prompts: 답은 순서대로 각 요청에 적용', async () => {
     const { input, term, printed } = io();
     const first = term.confirm(req('rm a'), new AbortController().signal);

@@ -39,24 +39,31 @@ export function createMcpServer(
             accountLabel: deps.identity.accountLabel,
             key: grantKey(tool.name, args),
           });
-        let result: ToolResult;
-        let outcome: 'ok' | 'denied' | 'error';
-        if (tool.confirm === 'always' && !(await ask(tool.summarize(args)))) {
-          result = errorResult('denied_locally', '사용자가 PC 에서 거부했습니다');
-          outcome = 'denied';
-        } else {
-          result = await tool.run(args, { allowedDirs: deps.allowedDirs, deniedDirs: deps.deniedDirs, confirm: ask });
-          const errorCode = result.isError ? safeErrorCode(result) : null;
-          outcome = !result.isError ? 'ok' : errorCode === 'denied_locally' ? 'denied' : 'error';
+        let result: ToolResult = errorResult('failed', '도구 실행 중 오류가 났습니다');
+        let outcome: 'ok' | 'denied' | 'error' = 'error';
+        try {
+          if (tool.confirm === 'always' && !(await ask(tool.summarize(args)))) {
+            result = errorResult('denied_locally', '사용자가 PC 에서 거부했습니다');
+            outcome = 'denied';
+          } else {
+            result = await tool.run(args, { allowedDirs: deps.allowedDirs, deniedDirs: deps.deniedDirs, confirm: ask });
+            const errorCode = result.isError ? safeErrorCode(result) : null;
+            outcome = !result.isError ? 'ok' : errorCode === 'denied_locally' ? 'denied' : 'error';
+          }
+        } catch {
+          // 확인 게이트(설정 저장 등)나 도구에서 예상 밖 예외가 나도 실행된 것으로 보지 않고, 감사 로그는 반드시 남긴다.
+          result = errorResult('failed', '도구 실행 중 오류가 났습니다');
+          outcome = 'error';
+        } finally {
+          await deps.audit.write({
+            tool: tool.name,
+            origin: deps.identity.origin,
+            pairingId: deps.identity.pairingId,
+            result: outcome,
+            ms: Date.now() - started,
+            args: summarizeArgs(args),
+          }).catch(() => undefined);
         }
-        await deps.audit.write({
-          tool: tool.name,
-          origin: deps.identity.origin,
-          pairingId: deps.identity.pairingId,
-          result: outcome,
-          ms: Date.now() - started,
-          args: summarizeArgs(args),
-        }).catch(() => undefined);
         // ToolResult 는 interface 라 SDK CallToolResult 의 인덱스 시그니처와 맞지 않아 객체 리터럴로 넘긴다.
         return { ...result };
       }

@@ -6,6 +6,8 @@ import { createInterface, type Interface } from 'node:readline';
 import type { ConfirmDecision, Confirmer, ConfirmRequest } from './policy/confirmer.js';
 
 const SUMMARY_DISPLAY_MAX = 500;
+/** 화면에 떠 있는 확인 외에 줄 세워 둘 수 있는 확인 수. 넘치면(요청 폭주) 새 확인은 즉시 거부한다. */
+export const MAX_QUEUED_CONFIRMATIONS = 10;
 const LABEL_DISPLAY_MAX = 200;
 
 /**
@@ -55,6 +57,10 @@ export class TerminalIO implements Confirmer {
   confirm(req: ConfirmRequest, signal: AbortSignal): Promise<ConfirmDecision> {
     if (this.closed) return Promise.resolve('deny');
     if (signal.aborted) return Promise.resolve('deny');
+    if (this.queue.length >= MAX_QUEUED_CONFIRMATIONS) {
+      this.output.write('\n(확인 대기가 너무 많아 새 요청을 거부했습니다)\n');
+      return Promise.resolve('deny');
+    }
     return new Promise((resolve) => {
       const pending: Pending = { req, signal, resolve };
       pending.onAbort = () => this.finish(pending, 'deny', '\n(시간 초과로 거부했습니다)\n');

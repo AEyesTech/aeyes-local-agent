@@ -3,6 +3,8 @@ import { mkdtemp, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ConfigStore } from '../src/config.js';
@@ -123,6 +125,21 @@ describe('보안 검사', () => {
     }
   });
 
+  it('/mcp JSON-RPC 배치(배열)는 400 batch_not_supported 이고 확인을 띄우지 않는다', async () => {
+    let asked = 0;
+    const { base, agent: a } = await boot({ confirm: async () => { asked += 1; return 'deny'; } });
+    const token = await pair(base, a);
+    const call = (id: number) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'shell_exec', arguments: { command: 'echo x' } } });
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { origin: ORIGIN, authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify(Array.from({ length: 50 }, (_, i) => call(i))),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('batch_not_supported');
+    expect(asked).toBe(0);
+  });
+
   it('본문 2MB 초과는 413', async () => {
     const { base, agent: a } = await boot();
     const token = await pair(base, a);
@@ -221,5 +238,29 @@ describe('MCP', () => {
     expect(store.get().alwaysAllow.map((r) => r.key)).toEqual(['shell_exec:echo']);
     await expect(readFile(path.join(allowed, 'ran.txt'), 'utf8')).rejects.toThrow();
     await client.close();
+  });
+
+  it('응답 종료 시 transport/mcp close 가 실패해도 처리되지 않은 거부가 생기지 않는다', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    // vi.spyOn 은 반환 promise 에 then 을 붙여(결과 기록) 거부를 '처리됨'으로 만들므로 프로토타입을 직접 바꾼다.
+    const originalTransportClose = StreamableHTTPServerTransport.prototype.close;
+    const originalMcpClose = McpServer.prototype.close;
+    let calls = 0;
+    StreamableHTTPServerTransport.prototype.close = function () { calls += 1; return Promise.reject(new Error('close failed')); };
+    McpServer.prototype.close = function () { return Promise.reject(new Error('close failed')); };
+    try {
+      const { base, agent: a } = await boot();
+      const client = await mcpClient(base, await pair(base, a));
+      await client.listTools();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(calls).toBeGreaterThan(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      StreamableHTTPServerTransport.prototype.close = originalTransportClose;
+      McpServer.prototype.close = originalMcpClose;
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });
