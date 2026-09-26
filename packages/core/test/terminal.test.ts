@@ -68,4 +68,34 @@ describe('TerminalIO', () => {
     expect(handler).toHaveBeenCalledWith('p');
     term.close();
   });
+
+  it('stdin 이 종료(EOF)되면 대기 중인 확인은 즉시 deny 되고, 이후 확인도 즉시 deny 된다', async () => {
+    const { input, term, printed } = io();
+    const pending = term.confirm(req('ls'), new AbortController().signal);
+    await tick();
+    input.end();
+    expect(await pending).toBe('deny');
+    const after = await term.confirm(req('ls2'), new AbortController().signal);
+    expect(after).toBe('deny');
+    expect(printed()).toContain('터미널 입력이 닫혀');
+  });
+
+  it('stdin 종료 경고는 한 번만 출력된다', async () => {
+    const { input, term, printed } = io();
+    const p1 = term.confirm(req('a'), new AbortController().signal);
+    const p2 = term.confirm(req('b'), new AbortController().signal);
+    await tick();
+    input.end();
+    expect(await p1).toBe('deny');
+    expect(await p2).toBe('deny');
+    const occurrences = printed().split('터미널 입력이 닫혀').length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it('close() 로 종료할 때는 stdin 종료 경고를 출력하지 않는다', async () => {
+    const { term, printed } = io();
+    term.close();
+    await tick();
+    expect(printed()).not.toContain('터미널 입력이 닫혀');
+  });
 });

@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { access, mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -71,5 +72,46 @@ describe('main', () => {
     expect(s.out()).toMatch(/\b\d{6}\b/);
     s.input.write('q\n');
     expect(await running).toBe(0);
+  });
+
+  it('실행 중인 에이전트가 있으면(agent.pid 살아 있음) unpair --all 은 거부되고 종료 코드 1', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'aeyes-cli-'));
+    await writeFile(path.join(dir, 'config.json'), JSON.stringify({
+      allowedDirs: [path.join(dir, 'allowed')],
+      pairings: [{ id: '1', tokenHash: 'h', accountLabel: 'a', browserLabel: 'b', createdAt: 'x', lastUsedAt: null }],
+    }));
+    await writeFile(path.join(dir, 'agent.pid'), String(process.pid));
+    const s = streams();
+    expect(await main(['unpair', '--all', '--config-dir', dir], s)).toBe(1);
+    expect(s.err()).toContain('실행 중');
+    expect(JSON.parse(await readFile(path.join(dir, 'config.json'), 'utf8')).pairings).toHaveLength(1);
+  });
+
+  it('agent.pid 가 죽은 프로세스를 가리키면 무시하고 unpair --all 을 진행한다', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'aeyes-cli-'));
+    await writeFile(path.join(dir, 'config.json'), JSON.stringify({
+      allowedDirs: [path.join(dir, 'allowed')],
+      pairings: [{ id: '1', tokenHash: 'h', accountLabel: 'a', browserLabel: 'b', createdAt: 'x', lastUsedAt: null }],
+    }));
+    const dead = spawn(process.execPath, ['-e', '""']);
+    const deadPid = await new Promise<number>((resolve) => {
+      dead.on('exit', () => resolve(dead.pid!));
+    });
+    await writeFile(path.join(dir, 'agent.pid'), String(deadPid));
+    const s = streams();
+    expect(await main(['unpair', '--all', '--config-dir', dir], s)).toBe(0);
+    expect(JSON.parse(await readFile(path.join(dir, 'config.json'), 'utf8')).pairings).toEqual([]);
+  });
+
+  it('start 는 agent.pid 를 만들고 q 로 종료하면 지운다', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'aeyes-cli-'));
+    await writeFile(path.join(dir, 'config.json'), JSON.stringify({ allowedDirs: [path.join(dir, 'allowed')] }));
+    const s = streams();
+    const running = main(['--config-dir', dir], s);
+    await new Promise((r) => setTimeout(r, 300));
+    expect((await readFile(path.join(dir, 'agent.pid'), 'utf8')).trim()).toBe(String(process.pid));
+    s.input.write('q\n');
+    expect(await running).toBe(0);
+    await expect(access(path.join(dir, 'agent.pid'))).rejects.toThrow();
   });
 });

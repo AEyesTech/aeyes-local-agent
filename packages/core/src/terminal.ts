@@ -17,10 +17,13 @@ export class TerminalIO implements Confirmer {
   private readonly queue: Pending[] = [];
   private active: Pending | null = null;
   private commandHandler: ((line: string) => void) | null = null;
+  private closed = false;
+  private explicitClose = false;
 
   constructor(input: NodeJS.ReadableStream, private readonly output: NodeJS.WritableStream) {
     this.rl = createInterface({ input, terminal: false });
     this.rl.on('line', (line) => this.onLine(line.trim()));
+    this.rl.on('close', () => this.onClosed());
   }
 
   onCommand(handler: (line: string) => void): void {
@@ -28,6 +31,7 @@ export class TerminalIO implements Confirmer {
   }
 
   confirm(req: ConfirmRequest, signal: AbortSignal): Promise<ConfirmDecision> {
+    if (this.closed) return Promise.resolve('deny');
     if (signal.aborted) return Promise.resolve('deny');
     return new Promise((resolve) => {
       const pending: Pending = { req, signal, resolve };
@@ -39,10 +43,30 @@ export class TerminalIO implements Confirmer {
   }
 
   close(): void {
-    for (const pending of [...this.queue, ...(this.active ? [this.active] : [])]) pending.resolve('deny');
+    this.explicitClose = true;
+    for (const pending of [...this.queue, ...(this.active ? [this.active] : [])]) {
+      if (pending.onAbort) pending.signal.removeEventListener('abort', pending.onAbort);
+      pending.resolve('deny');
+    }
     this.queue.length = 0;
     this.active = null;
     this.rl.close();
+  }
+
+  /** stdin 이 닫히면(EOF, 파이프 종료 등) 대기 중인 확인은 모두 거부하고, 이후 확인 요청도 즉시 거부한다.
+   *  에이전트 자체는 계속 실행되어야 하므로 여기서 프로세스를 종료하지 않는다. */
+  private onClosed(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const pending of [...this.queue, ...(this.active ? [this.active] : [])]) {
+      if (pending.onAbort) pending.signal.removeEventListener('abort', pending.onAbort);
+      pending.resolve('deny');
+    }
+    this.queue.length = 0;
+    this.active = null;
+    if (!this.explicitClose) {
+      this.output.write('터미널 입력이 닫혀 로컬 확인이 필요한 요청은 모두 거부됩니다.\n');
+    }
   }
 
   private showNext(): void {
