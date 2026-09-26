@@ -2,6 +2,7 @@
  * 에이전트 설정(~/.aeyes-agent/config.json). 페어링·항상 허용·허용 폴더를 담는다.
  * 깨진 설정은 덮어쓰지 않는다 — 페어링 정보를 조용히 잃지 않기 위해 시작을 거부한다.
  */
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -49,7 +50,29 @@ export function defaultConfigDir(
   return path.posix.join(home, '.aeyes-agent');
 }
 
-export function defaultAllowedDir(home: string = homedir()): string {
+/**
+ * 기본 허용 폴더: 문서 폴더 아래 AeyeStudio.
+ * Windows 는 문서 폴더가 OneDrive 로 옮겨진 경우가 많아 %OneDrive%\Documents → %USERPROFILE%\OneDrive\Documents →
+ * %USERPROFILE%\Documents 순서로 실제 있는 것을 쓴다(없으면 마지막). macOS/Linux 는 ~/Documents.
+ */
+export function defaultAllowedDir(
+  home: string = homedir(),
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (p: string) => boolean = existsSync
+): string {
+  if (platform === 'win32') {
+    const w = path.win32;
+    // os.homedir() 는 Windows 에서 %USERPROFILE% 이다. 테스트·--config 에서 넘긴 home 을 존중하려고 home 을 쓴다.
+    const profile = home;
+    const candidates = [
+      ...(env.OneDrive ? [w.join(env.OneDrive, 'Documents')] : []),
+      w.join(profile, 'OneDrive', 'Documents'),
+      w.join(profile, 'Documents'),
+    ];
+    const documents = candidates.find((c) => exists(c)) ?? w.join(profile, 'Documents');
+    return w.join(documents, 'AeyeStudio');
+  }
   return path.join(home, 'Documents', 'AeyeStudio');
 }
 

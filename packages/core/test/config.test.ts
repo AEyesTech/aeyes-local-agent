@@ -2,7 +2,7 @@ import { mkdtemp, readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ConfigCorruptedError, ConfigStore, defaultConfigDir, DEFAULT_PORT } from '../src/config.js';
+import { ConfigCorruptedError, ConfigStore, defaultAllowedDir, defaultConfigDir, DEFAULT_PORT } from '../src/config.js';
 
 async function tempHome() {
   return mkdtemp(path.join(tmpdir(), 'aeyes-home-'));
@@ -15,6 +15,27 @@ describe('defaultConfigDir', () => {
   it('Windows 는 %APPDATA%\\aeyes-agent', () => {
     expect(defaultConfigDir('win32', { APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }, 'C:\\Users\\a'))
       .toBe('C:\\Users\\a\\AppData\\Roaming\\aeyes-agent');
+  });
+});
+
+describe('defaultAllowedDir', () => {
+  it('macOS/Linux 는 ~/Documents/AeyeStudio', () => {
+    expect(defaultAllowedDir('/Users/a', 'darwin', {}, () => false)).toBe('/Users/a/Documents/AeyeStudio');
+    expect(defaultAllowedDir('/home/a', 'linux', { OneDrive: '/x' }, () => true)).toBe('/home/a/Documents/AeyeStudio');
+  });
+
+  it('Windows 는 OneDrive 로 옮겨진 문서 폴더를 먼저 찾는다', () => {
+    const home = 'C:\\Users\\a';
+    const env = { OneDrive: 'C:\\Users\\a\\OneDrive - Company', USERPROFILE: home };
+    const only = (...existing: string[]) => (p: string) => existing.includes(p);
+    expect(defaultAllowedDir(home, 'win32', env, only('C:\\Users\\a\\OneDrive - Company\\Documents', 'C:\\Users\\a\\Documents')))
+      .toBe('C:\\Users\\a\\OneDrive - Company\\Documents\\AeyeStudio');
+    expect(defaultAllowedDir(home, 'win32', env, only('C:\\Users\\a\\OneDrive\\Documents', 'C:\\Users\\a\\Documents')))
+      .toBe('C:\\Users\\a\\OneDrive\\Documents\\AeyeStudio');
+    expect(defaultAllowedDir(home, 'win32', { USERPROFILE: home }, only('C:\\Users\\a\\Documents')))
+      .toBe('C:\\Users\\a\\Documents\\AeyeStudio');
+    expect(defaultAllowedDir(home, 'win32', {}, only()))
+      .toBe('C:\\Users\\a\\Documents\\AeyeStudio');
   });
 });
 
