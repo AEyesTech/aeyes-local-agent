@@ -1,4 +1,5 @@
 import open, { openApp } from 'open';
+import path from 'node:path';
 import { z } from 'zod';
 import { ToolError } from '../errors.js';
 import { resolveAllowedPath } from '../paths.js';
@@ -23,6 +24,23 @@ function isWebUrl(value: string): boolean {
   }
 }
 
+/** 열면 코드가 실행되거나 다른 프로그램을 띄우는 형식. open_path 로는 열지 않는다(앱 실행은 open_app 으로). */
+const LAUNCHER_EXTENSIONS = new Set([
+  '.app', '.exe', '.bat', '.cmd', '.com', '.ps1', '.vbs', '.js', '.jse', '.wsf', '.msi', '.lnk', '.scr', '.command',
+  '.sh', '.jar', '.pkg', '.dmg', '.workflow', '.terminal', '.url', '.desktop', '.reg', '.hta', '.cpl',
+]);
+
+function isLauncher(file: string): boolean {
+  // 끝의 구분자·점·공백은 Windows 가 무시하므로 떼고 본다(예: "a.exe." / "evil.app/").
+  const trimmed = file.replace(/[\\/.\s]+$/, '');
+  return LAUNCHER_EXTENSIONS.has(path.extname(trimmed).toLowerCase());
+}
+
+function describeArgs(args: unknown): string {
+  if (!Array.isArray(args) || args.length === 0) return '';
+  return ` (인자: ${args.map((a) => JSON.stringify(String(a))).join(' ')})`;
+}
+
 export function createOpenTools(deps: OpenDeps = defaultDeps): ToolDef[] {
   return [
     defineTool({
@@ -41,6 +59,10 @@ export function createOpenTools(deps: OpenDeps = defaultDeps): ToolDef[] {
           throw new ToolError('invalid_argument', 'http(s) 주소나 허용 폴더 경로만 열 수 있습니다');
         }
         const target = await resolveAllowedPath(args.target, ctx.allowedDirs, { mustExist: true });
+        // 입력 이름과 링크를 따라간 실제 경로 모두 검사한다.
+        if (isLauncher(args.target) || isLauncher(target)) {
+          throw new ToolError('invalid_argument', '실행 파일·실행기 형식은 open_path 로 열 수 없습니다');
+        }
         await deps.openTarget(target);
         return jsonResult({ opened: target });
       },
@@ -54,7 +76,7 @@ export function createOpenTools(deps: OpenDeps = defaultDeps): ToolDef[] {
       },
       readOnly: false,
       confirm: 'always',
-      summarize: (a) => `앱 실행: ${String(a.name)}`,
+      summarize: (a) => `앱 실행: ${String(a.name)}${describeArgs(a.args)}`,
       handler: async (args) => {
         await deps.openApp(args.name, args.args ?? []);
         return jsonResult({ launched: args.name });

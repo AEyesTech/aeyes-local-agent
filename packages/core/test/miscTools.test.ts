@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -44,6 +44,38 @@ describe('open', () => {
     const outside = await tools.open_path.run({ target: '/etc/hosts' }, c);
     expect(outside.isError).toBe(true);
     expect(deps.openTarget).toHaveBeenCalledTimes(2);
+  });
+
+  it('open_path 는 실행 파일·실행기 형식을 invalid_argument 로 거부한다', async () => {
+    const deps = { openTarget: vi.fn(async () => undefined), openApp: vi.fn(async () => undefined) };
+    const tools = byName(createOpenTools(deps));
+    const c = await ctx();
+    for (const name of ['evil.app', 'x.EXE', 'a.bat', 'a.cmd', 'a.com', 'a.ps1', 'a.vbs', 'a.js', 'a.jse', 'a.wsf', 'a.msi',
+      'a.lnk', 'a.scr', 'a.command', 'a.sh', 'a.jar', 'a.pkg', 'a.dmg', 'a.workflow', 'a.terminal', 'a.url', 'a.desktop',
+      'a.reg', 'a.hta', 'a.cpl']) {
+      await writeFile(path.join(c.allowed, name), 'x');
+      const r = await tools.open_path.run({ target: name }, c);
+      expect(r.isError, name).toBe(true);
+      expect(JSON.parse((r.content[0] as { text: string }).text).error, name).toBe('invalid_argument');
+    }
+    expect(deps.openTarget).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === 'win32')('open_path 는 실행 파일을 가리키는 심볼릭 링크도 거부한다', async () => {
+    const deps = { openTarget: vi.fn(async () => undefined), openApp: vi.fn(async () => undefined) };
+    const tools = byName(createOpenTools(deps));
+    const c = await ctx();
+    await writeFile(path.join(c.allowed, 'run.command'), 'x');
+    await symlink(path.join(c.allowed, 'run.command'), path.join(c.allowed, 'doc.txt'));
+    const r = await tools.open_path.run({ target: 'doc.txt' }, c);
+    expect(r.isError).toBe(true);
+    expect(deps.openTarget).not.toHaveBeenCalled();
+  });
+
+  it('open_app 확인 요약에 인자가 보인다', () => {
+    const tools = byName(createOpenTools());
+    expect(tools.open_app.summarize({ name: 'Terminal', args: ['-e', 'rm -rf ~'] })).toContain('rm -rf ~');
+    expect(tools.open_app.summarize({ name: 'Terminal', args: ['-e', 'rm -rf ~'] })).toContain('Terminal');
   });
 
   it('open_app 은 이름과 인자를 넘긴다', async () => {

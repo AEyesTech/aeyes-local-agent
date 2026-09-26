@@ -6,7 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { AGENT_VERSION } from './version.js';
 import type { AuditLog } from './audit.js';
 import { summarizeArgs } from './audit.js';
-import { alwaysAllowKey, type ConfirmationGate } from './policy/gate.js';
+import { grantKey, type ConfirmationGate } from './policy/gate.js';
 import { errorResult, type ToolDef, type ToolResult } from './tools/types.js';
 
 export interface RequestIdentity {
@@ -37,7 +37,7 @@ export function createMcpServer(
             summary,
             origin: deps.identity.origin,
             accountLabel: deps.identity.accountLabel,
-            key: alwaysAllowKey(tool.name, args),
+            key: grantKey(tool.name, args),
           });
         let result: ToolResult;
         let outcome: 'ok' | 'denied' | 'error';

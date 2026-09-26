@@ -175,9 +175,23 @@ describe('MCP', () => {
     let asked = 0;
     const { base, agent: a } = await boot({ confirm: async () => { asked += 1; return 'always'; } });
     const client = await mcpClient(base, await pair(base, a));
-    await client.callTool({ name: 'shell_exec', arguments: { command: 'node -e "1"' } });
-    await client.callTool({ name: 'shell_exec', arguments: { command: 'node -e "2"' } });
+    await client.callTool({ name: 'shell_exec', arguments: { command: 'echo 1' } });
+    await client.callTool({ name: 'shell_exec', arguments: { command: 'echo 2' } });
     expect(asked).toBe(1);
+    await client.close();
+  });
+
+  it('항상 허용된 명령이라도 연결·치환·인터프리터 명령은 다시 묻고 기록하지 않는다', async () => {
+    const asked: string[] = [];
+    const { base, agent: a, store, allowed } = await boot({ confirm: async (req) => { asked.push(req.summary); return req.alwaysAllowed ? 'always' : 'deny'; } });
+    const client = await mcpClient(base, await pair(base, a));
+    await client.callTool({ name: 'shell_exec', arguments: { command: 'echo 1' } });
+    const chained = await client.callTool({ name: 'shell_exec', arguments: { command: 'echo 1; node -e "require(\'fs\').writeFileSync(\'ran.txt\',\'x\')"' } });
+    expect(JSON.parse((chained.content as Array<{ text: string }>)[0].text).error).toBe('denied_locally');
+    await client.callTool({ name: 'shell_exec', arguments: { command: 'node -e "1"' } });
+    expect(asked).toHaveLength(3);
+    expect(store.get().alwaysAllow.map((r) => r.key)).toEqual(['shell_exec:echo']);
+    await expect(readFile(path.join(allowed, 'ran.txt'), 'utf8')).rejects.toThrow();
     await client.close();
   });
 });

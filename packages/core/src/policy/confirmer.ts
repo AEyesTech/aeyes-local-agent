@@ -10,6 +10,10 @@ export interface ConfirmRequest {
   summary: string;
   origin: string;
   accountLabel: string;
+  /** "항상 허용"을 제안·수락해도 되는지. true 가 아니면 확인기는 [a] 를 보이지 않고 'always' 대신 'allow' 로 답한다. */
+  alwaysAllowed?: boolean;
+  /** "항상 허용"을 고르면 기록될 범위 키(예: shell_exec:git). alwaysAllowed 일 때만 있다. */
+  grantKey?: string;
 }
 
 export interface Confirmer {

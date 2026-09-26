@@ -75,17 +75,21 @@ export class TerminalIO implements Confirmer {
     if (!next) return;
     this.active = next;
     const { req } = next;
+    const always = req.alwaysAllowed === true && req.grantKey ? `  [a] 항상 허용 (범위: ${req.grantKey})` : '';
     this.output.write(
       `\n[확인 필요] ${req.accountLabel || 'AeyeStudio'} (${req.origin})\n` +
       `  ${req.tool}: ${req.summary}\n` +
-      '  [y] 허용  [a] 항상 허용  [N] 거부 > '
+      `  [y] 허용${always}  [N] 거부 > `
     );
   }
 
   private onLine(line: string): void {
     if (this.active) {
       const answer = line.toLowerCase();
-      const decision: ConfirmDecision = answer === 'y' ? 'allow' : answer === 'a' ? 'always' : 'deny';
+      // "항상 허용"은 요청이 허용 가능하다고 표시한 경우에만 받는다. 아니면 a 는 이번만 허용.
+      const canAlways = this.active.req.alwaysAllowed === true && !!this.active.req.grantKey;
+      const decision: ConfirmDecision =
+        answer === 'y' ? 'allow' : answer === 'a' ? (canAlways ? 'always' : 'allow') : 'deny';
       this.finish(this.active, decision, decision === 'deny' ? '거부했습니다.\n' : '허용했습니다.\n');
       return;
     }

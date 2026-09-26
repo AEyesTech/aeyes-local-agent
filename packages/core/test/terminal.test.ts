@@ -11,7 +11,10 @@ function io() {
   return { input, term, printed: () => printed };
 }
 
-const req = (summary: string) => ({ tool: 'shell_exec', summary, origin: 'https://studio.aeyes.dev', accountLabel: 'ky***' });
+const req = (summary: string, alwaysAllowed = true) => ({
+  tool: 'shell_exec', summary, origin: 'https://studio.aeyes.dev', accountLabel: 'ky***',
+  alwaysAllowed, grantKey: alwaysAllowed ? `shell_exec:${summary.split(' ')[0]}` : undefined,
+});
 const tick = () => new Promise((r) => setTimeout(r, 10));
 
 describe('TerminalIO', () => {
@@ -26,6 +29,36 @@ describe('TerminalIO', () => {
     const p3 = term.confirm(req('ls'), new AbortController().signal);
     await tick(); input.write('\n');
     expect(await p3).toBe('deny');
+    term.close();
+  });
+
+  it('항상 허용 가능하면 범위와 함께 [a] 를 보여 준다', async () => {
+    const { input, term, printed } = io();
+    const p = term.confirm(req('git status'), new AbortController().signal);
+    await tick();
+    expect(printed()).toContain('[a] 항상 허용 (범위: shell_exec:git)');
+    input.write('a\n');
+    expect(await p).toBe('always');
+    term.close();
+  });
+
+  it('항상 허용 불가면 [a] 를 보이지 않고 a 입력은 이번만 허용', async () => {
+    const { input, term, printed } = io();
+    const p = term.confirm(req('git status; rm -rf ~', false), new AbortController().signal);
+    await tick();
+    expect(printed()).not.toContain('[a]');
+    input.write('a\n');
+    expect(await p).toBe('allow');
+    term.close();
+  });
+
+  it('alwaysAllowed 가 없는 요청도 항상 허용을 받지 않는다', async () => {
+    const { input, term, printed } = io();
+    const p = term.confirm({ tool: 'fs_delete', summary: 'x', origin: 'o', accountLabel: '' }, new AbortController().signal);
+    await tick();
+    expect(printed()).not.toContain('[a]');
+    input.write('a\n');
+    expect(await p).toBe('allow');
     term.close();
   });
 
