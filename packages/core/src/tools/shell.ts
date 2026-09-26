@@ -14,12 +14,22 @@ const MAX_TIMEOUT_SEC = 300;
 /** 'exit' 이후 'close'(stdio 드레인)를 기다리는 유예 시간. 백그라운드 손자 프로세스가 파이프를 물고 있으면 'close'가 영영 오지 않을 수 있다. */
 const CLOSE_GRACE_MS = 1000;
 
+/** PowerShell 출력이 한글 등에서 깨지지 않게 UTF-8 로 바꾼 뒤 명령을 실행하고 종료 코드를 넘긴다.
+ *  명령은 따옴표 처리 문제를 피하려고 UTF-16LE base64(-EncodedCommand)로 넘긴다.
+ *  명령을 별도 줄에 두어 끝의 주석(#)이 exit 줄을 삼키지 않게 한다. */
+const POWERSHELL_PREFIX = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8;';
+
+function encodePowerShell(command: string): string {
+  const script = `${POWERSHELL_PREFIX}\n${command}\nif ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }\n`;
+  return Buffer.from(script, 'utf16le').toString('base64');
+}
+
 export function shellInvocation(
   platform: NodeJS.Platform = process.platform,
   zshExists: boolean = existsSync('/bin/zsh')
 ): { file: string; argsFor(command: string): string[] } {
   if (platform === 'win32') {
-    return { file: 'powershell.exe', argsFor: (c) => ['-NoProfile', '-NonInteractive', '-Command', c] };
+    return { file: 'powershell.exe', argsFor: (c) => ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodePowerShell(c)] };
   }
   if (zshExists) return { file: '/bin/zsh', argsFor: (c) => ['-lc', c] };
   return { file: '/bin/sh', argsFor: (c) => ['-c', c] };
@@ -60,6 +70,8 @@ export function createShellTools(): ToolDef[] {
           const child = spawn(shell.file, shell.argsFor(args.command), {
             cwd,
             env: process.env,
+            // 입력을 기다리는 명령이 타임아웃까지 멈춰 있지 않도록 stdin 은 닫아 둔다.
+            stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
             detached: process.platform !== 'win32',
           });

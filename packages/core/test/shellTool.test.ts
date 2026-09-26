@@ -27,11 +27,25 @@ describe('shellInvocation', () => {
     expect(shellInvocation('linux', false).file).toBe('/bin/sh');
     const win = shellInvocation('win32', false);
     expect(win.file).toBe('powershell.exe');
-    expect(win.argsFor('dir')).toEqual(['-NoProfile', '-NonInteractive', '-Command', 'dir']);
+    const args = win.argsFor('dir "한글 폴더"');
+    expect(args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-EncodedCommand']);
+    expect(args).toHaveLength(4);
+    const script = Buffer.from(args[3], 'base64').toString('utf16le');
+    expect(script.startsWith('[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8;')).toBe(true);
+    expect(script).toContain('\ndir "한글 폴더"\n');
+    expect(script).toMatch(/exit \$LASTEXITCODE/);
+    expect(script.indexOf('dir "한글 폴더"')).toBeLessThan(script.indexOf('exit $LASTEXITCODE'));
   });
 });
 
 describe('shell_exec', () => {
+  it('stdin 은 닫혀 있어 입력을 기다리는 명령이 멈추지 않는다', async () => {
+    const { run } = await setup();
+    const { json } = await run({ command: node("process.stdin.resume(); process.stdin.on('end', () => console.log('eof'))"), timeoutSec: 5 });
+    expect(json.timedOut).toBe(false);
+    expect(json.stdout.trim()).toBe('eof');
+  });
+
   it('출력과 종료 코드', async () => {
     const { run } = await setup();
     const { json } = await run({ command: node("console.log('hi'); console.error('err'); process.exit(3)") });
