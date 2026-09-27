@@ -6,6 +6,10 @@
  * - 서버와 해석이 어긋날 수 있는 부분(백슬래시 이스케이프 설정)은 두 해석으로 모두 검사해 하나라도 쓰기면 쓰기.
  * - MySQL 실행 주석(/*! … *\/)·힌트는 거부. MySQL `--` 는 뒤에 공백이 있을 때만 주석(아니면 빼기 연산자).
  * 판별은 1차 방어선이고, 읽기는 DB 의 읽기 전용 트랜잭션 안에서 실행한다(2차). 읽기 전용 DB 계정 사용을 권장한다.
+ *
+ * 주의: 부작용 함수·접두사 목록은 최선 노력의 거부 목록(deny-list)이다. 사용자 정의 함수·프로시저의 부작용은
+ * 이름으로 알아낼 수 없고, 서버 버전·확장이 늘면 목록도 불완전해진다. 따라서 호출자는 'read' 판정 쿼리도
+ * 반드시 읽기 전용 트랜잭션 안에서 실행하고 끝나면 ROLLBACK 해야 하며(MUST), 읽기 전용 DB 계정 사용을 권장한다.
  */
 import type { DatabaseKind } from '../config.js';
 
@@ -34,10 +38,18 @@ const SIDE_EFFECT_FUNCTIONS = new Set([
   'query_to_xml', 'query_to_xml_and_xmlschema', 'query_to_xmlschema', 'ts_stat',
   'lowrite', 'lo_truncate', 'lo_truncate64', 'pg_file_unlink', 'pg_file_rename', 'pg_switch_wal',
   'pg_create_restore_point', 'pg_logical_emit_message',
+  'lo_creat', 'lo_open', 'pg_current_logfile', 'pg_log_backend_memory_contexts', 'pg_import_system_collations',
+  'pg_stat_statements_reset', 'setseed', 'pg_prewarm', 'txid_current', 'pg_current_xact_id',
+  'master_pos_wait', 'source_pos_wait', 'wait_for_executed_gtid_set', 'last_insert_id', 'mysql_firewall_flush_status',
   'load_file', 'sleep', 'benchmark', 'get_lock', 'release_lock', 'release_all_locks', 'sys_exec', 'sys_eval',
 ]);
 /** 이 접두어로 시작하는 함수도 부작용으로 본다(dblink_send_query, pg_try_advisory_lock_shared, pg_create_*_replication_slot …). */
-const SIDE_EFFECT_PREFIXES = ['dblink', 'pg_advisory', 'pg_try_advisory', 'pg_stat_reset', 'pg_create_', 'pg_drop_'];
+const SIDE_EFFECT_PREFIXES = [
+  'dblink', 'pg_advisory', 'pg_try_advisory', 'pg_stat_reset', 'pg_create_', 'pg_drop_',
+  'pg_ls_', 'pg_backup_', 'pg_start_backup', 'pg_stop_backup', 'pg_wal_replay_', 'pg_replication_', 'pg_logical_',
+  'pg_copy_', 'pg_restore_', 'pg_clear_', 'brin_', 'gin_clean',
+  'asynchronous_connection_failover', 'group_replication_', 'keyring_', 'version_tokens_', 'audit_log_', 'service_get_',
+];
 const UNTERMINATED = '따옴표나 주석이 닫히지 않았습니다';
 /** 식별자를 이루는 문자. 서버(PostgreSQL·MySQL)는 비ASCII 문자도 식별자로 받으므로 함께 본다. */
 const IDENT_CHAR = /[A-Za-z0-9_$\u0080-\uffff]/;
@@ -174,7 +186,11 @@ export function classifySql(sql: string, dialect: SqlDialect): SqlClassification
     if (!keyword) keyword = head;
     // FOR SHARE / FOR KEY SHARE 는 행 잠금이다(FOR UPDATE 는 update 로 잡힌다).
     const rowLock = words.some((w, n) => w === 'for' && (words[n + 1] === 'share' || (words[n + 1] === 'key' && words[n + 2] === 'share')));
-    if (!READ_HEADS.has(head) || rowLock || words.some((w) => WRITE_WORDS.has(w) || isSideEffectFunction(w))) {
+    // NEXT VALUE FOR <seq>(MariaDB·표준 SQL 시퀀스 증가). PREVIOUS VALUE FOR 는 읽기.
+    const nextValue = words.some((w, n) => w === 'next' && words[n + 1] === 'value' && words[n + 2] === 'for');
+    // MySQL 사용자 변수 대입(@a := 1)은 세션 상태 변경이다. 문자열은 이미 지워졌다.
+    const mysqlAssign = dialect === 'mysql' && scrubbed.text.includes(':=');
+    if (!READ_HEADS.has(head) || rowLock || nextValue || mysqlAssign || words.some((w) => WRITE_WORDS.has(w) || isSideEffectFunction(w))) {
       kind = 'write';
     }
   }

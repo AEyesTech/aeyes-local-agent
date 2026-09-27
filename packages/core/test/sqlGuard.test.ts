@@ -130,3 +130,61 @@ describe('classifySql 우회 시도(추가)', () => {
     expect(kind(sql, dialect)).toBe('read');
   });
 });
+
+describe('classifySql 부작용 함수·접두사 보강(리뷰 1차)', () => {
+  const both = [
+    "SELECT lo_creat(-1)",
+    'SELECT lo_open(1, 131072)',
+    'SELECT * FROM pg_ls_waldir()',
+    'SELECT pg_current_logfile()',
+    "SELECT pg_backup_start('x')",
+    "SELECT pg_start_backup('x')",
+    'SELECT pg_wal_replay_pause()',
+    'SELECT pg_log_backend_memory_contexts(1)',
+    "SELECT pg_import_system_collations('pg_catalog')",
+    "SELECT pg_replication_origin_create('o')",
+    "SELECT * FROM pg_logical_slot_get_changes('s', NULL, NULL)",
+    "SELECT pg_copy_logical_replication_slot('a','b')",
+    "SELECT brin_summarize_new_values('i')",
+    "SELECT gin_clean_pending_list('i')",
+    'SELECT pg_stat_statements_reset()',
+    "SELECT pg_clear_relation_stats('t')",
+    'SELECT txid_current()',
+    'SELECT pg_current_xact_id()',
+    'SELECT setseed(0.5)',
+    "SELECT pg_prewarm('t')",
+    "SELECT MASTER_POS_WAIT('f',1)",
+    "SELECT WAIT_FOR_EXECUTED_GTID_SET('x',10)",
+    "SELECT group_replication_set_as_primary('u')",
+    "SELECT keyring_key_remove('k')",
+    "SELECT version_tokens_set('a=1')",
+    'SELECT audit_log_rotate()',
+    "SELECT service_get_write_locks('n','l',1)",
+    'SELECT mysql_firewall_flush_status()',
+    'SELECT LAST_INSERT_ID(5)',
+  ];
+  it.each(both.flatMap((sql) => [[sql, 'postgres'], [sql, 'mysql']]) as Array<[string, SqlDialect]>)(
+    '%s (%s)',
+    (sql, dialect) => {
+      expect(kind(sql, dialect)).toBe('write');
+    }
+  );
+
+  it.each([
+    ['SELECT NEXT VALUE FOR s', 'mysql'],
+    ['SELECT next value for s', 'postgres'],
+    ['SELECT @a := 1', 'mysql'],
+    ['SELECT @a:=a FROM t', 'mysql'],
+  ] as Array<[string, SqlDialect]>)('%s (%s)', (sql, dialect) => {
+    expect(kind(sql, dialect)).toBe('write');
+  });
+
+  it.each([
+    ['SELECT PREVIOUS VALUE FOR s', 'mysql'],
+    ['SELECT @a = 1', 'mysql'],
+    ["SELECT ':=' AS s", 'mysql'],
+    ['SELECT next_value FROM t', 'postgres'],
+  ] as Array<[string, SqlDialect]>)('읽기 유지: %s (%s)', (sql, dialect) => {
+    expect(kind(sql, dialect)).toBe('read');
+  });
+});
