@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * npx @aeyes/local-agent 진입점.
+ * npx aeyes-local-agent 진입점.
  * 시작하면 포트와 페어링 코드를 보여 주고, p=새 코드, u=전체 해제, g=항상 허용 목록, r=항상 허용 초기화, q=종료 명령을 받는다.
  */
 import path from 'node:path';

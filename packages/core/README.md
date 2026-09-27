@@ -1,4 +1,4 @@
-# @aeyes/local-agent
+# aeyes-local-agent
 
 AeyeStudio AI 채팅이 **내 PC**의 파일·엑셀·클립보드·앱·셸을 쓸 수 있게 하는 로컬 MCP 에이전트입니다.
 AeyeStudio 서버가 PC에 접속하지 않습니다 — 크롬의 AeyeStudio 탭이 `127.0.0.1`의 에이전트에 붙어 요청을 중계합니다.
@@ -6,7 +6,7 @@ AeyeStudio 서버가 PC에 접속하지 않습니다 — 크롬의 AeyeStudio �
 ## 실행
 
 ```bash
-npx @aeyes/local-agent
+npx aeyes-local-agent
 ```
 
 터미널에 표시되는 6자리 코드를 AeyeStudio **설정 > 내 PC 연결**에 입력하면 연결됩니다.

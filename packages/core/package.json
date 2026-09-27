@@ -1,16 +1,30 @@
 {
-  "name": "@aeyes/local-agent",
+  "name": "aeyes-local-agent",
   "version": "0.1.0",
   "description": "AeyeStudio 내 PC 연결용 로컬 MCP 에이전트",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
-  "bin": { "aeyes-local-agent": "dist/cli.js" },
+  "bin": {
+    "aeyes-local-agent": "dist/cli.js"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "files": ["dist"],
-  "engines": { "node": ">=20" },
-  "publishConfig": { "access": "public" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -29,5 +43,11 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AEyesTech/aeyes-local-agent.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/AEyesTech/aeyes-local-agent#readme"
 }
