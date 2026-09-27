@@ -10,19 +10,30 @@ window.aeyesConfirm.onShow((view) => {
 
   const box = byId('buttons');
   box.replaceChildren();
+  let decided = false;
+  const decide = (buttonId) => {
+    if (decided) return;
+    decided = true;
+    for (const b of buttons) b.disabled = true;
+    window.aeyesConfirm.decide(view.id, buttonId);
+  };
   const buttons = view.buttons.map((spec) => {
     const el = document.createElement('button');
     el.type = 'button';
     el.textContent = spec.label;
     el.className = spec.id === 'deny' ? 'deny' : 'allow';
     el.disabled = true;
-    el.addEventListener('click', () => {
-      for (const b of buttons) b.disabled = true;
-      window.aeyesConfirm.decide(view.id, spec.id);
-    });
+    el.addEventListener('click', () => decide(spec.id));
     box.appendChild(el);
     return el;
   });
+  // Escape 는 언제든(버튼 활성화 전에도) 거부 — 거부는 안전한 쪽이라 지연을 두지 않는다.
+  document.onkeydown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      decide('deny');
+    }
+  };
   setTimeout(() => { for (const b of buttons) b.disabled = false; }, view.enableDelayMs);
 
   let left = view.timeoutSec;

@@ -10,7 +10,7 @@ import electronUpdater from 'electron-updater';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AGENT_VERSION, ConfigStore, defaultConfigDir, readRunningPid, removePidFile, startAgent, writePidFile,
+  AgentAlreadyRunningError, AGENT_VERSION, ConfigStore, defaultConfigDir, readRunningPid, removePidFile, startAgent, writePidFile,
   type RunningAgent,
 } from 'aeyes-local-agent';
 import type { ConfirmView } from './confirmView.js';
@@ -80,7 +80,12 @@ function openConfirmWindow(view: ConfirmView): ConfirmWindowHandle {
     win.showInactive();
     win.flashFrame(true);
   });
-  void win.loadFile(path.join(staticDir, 'confirm.html'));
+  win.loadFile(path.join(staticDir, 'confirm.html')).catch((error: unknown) => {
+    // 확인 창을 띄우지 못하면 거부로 끝내고 창을 닫는다.
+    console.error('[aeyes-agent-desktop] 확인 창을 열 수 없습니다', error);
+    settle(null);
+    close();
+  });
   return { result, close };
 }
 
@@ -124,6 +129,14 @@ async function pickAllowedDir(store: ConfigStore): Promise<void> {
   if (!result.ok) dialog.showErrorBox(TITLE, result.reason);
 }
 
+/** 트레이 동작 실패를 로그로 남기고 사용자에게 알린다. */
+function reportActionError(action: string): (error: unknown) => void {
+  return (error: unknown) => {
+    console.error(`[aeyes-agent-desktop] ${action} 실패`, error);
+    dialog.showErrorBox(TITLE, `${action}에 실패했습니다: ${error instanceof Error ? error.message : String(error)}`);
+  };
+}
+
 function notify(text: { title: string; body: string }): void {
   if (Notification.isSupported()) new Notification(text).show();
 }
@@ -154,7 +167,16 @@ async function boot(): Promise<void> {
     app.exit(1);
     return;
   }
-  await writePidFile(store.dir);
+  try {
+    await writePidFile(store.dir);
+  } catch (error) {
+    // 시작 검사 뒤에 터미널 에이전트가 먼저 pid 파일을 만든 경우(경합) 등.
+    dialog.showErrorBox(TITLE, error instanceof AgentAlreadyRunningError
+      ? `${error.message} 터미널의 npx 에이전트를 먼저 종료한 뒤 다시 실행하세요.`
+      : `pid 파일을 만들 수 없습니다: ${error instanceof Error ? error.message : String(error)}`);
+    app.exit(error instanceof AgentAlreadyRunningError ? 0 : 1);
+    return;
+  }
 
   const confirmer = new DesktopConfirmer(openConfirmWindow);
   let agent: RunningAgent;
@@ -182,25 +204,30 @@ async function boot(): Promise<void> {
   };
 
   const actions: TrayActions = {
-    showPairingCode: () => { void showPairingCode(agent); },
-    revokePairing: (id) => { void agent.pairing.revoke(id); },
-    revokeAllPairings: () => { void agent.pairing.revokeAll(); },
-    openFolder: (dir) => { void shell.openPath(dir); },
-    addAllowedDir: () => { void pickAllowedDir(store); },
-    removeAllowedDir: (dir) => {
-      void removeAllowedDir(store, dir).then((r) => { if (!r.ok) dialog.showErrorBox(TITLE, r.reason); });
+    showPairingCode: () => { showPairingCode(agent).catch(reportActionError('페어링 코드 표시')); },
+    revokePairing: (id) => { agent.pairing.revoke(id).catch(reportActionError('연결 해제')); },
+    revokeAllPairings: () => { agent.pairing.revokeAll().catch(reportActionError('모든 연결 해제')); },
+    openFolder: (dir) => {
+      shell.openPath(dir).then((error) => {
+        if (error) dialog.showErrorBox(TITLE, `폴더를 열 수 없습니다: ${error}`);
+      }).catch(reportActionError('폴더 열기'));
     },
-    removeAlwaysAllow: (key) => { void removeAlwaysAllow(store, key); },
-    resetAlwaysAllow: () => { void resetAlwaysAllow(store); },
+    addAllowedDir: () => { pickAllowedDir(store).catch(reportActionError('허용 폴더 추가')); },
+    removeAllowedDir: (dir) => {
+      removeAllowedDir(store, dir).then((r) => { if (!r.ok) dialog.showErrorBox(TITLE, r.reason); })
+        .catch(reportActionError('허용 폴더 제거'));
+    },
+    removeAlwaysAllow: (key) => { removeAlwaysAllow(store, key).catch(reportActionError('항상 허용 제거')); },
+    resetAlwaysAllow: () => { resetAlwaysAllow(store).catch(reportActionError('항상 허용 초기화')); },
     clearSessionGrants: () => { agent.clearSessionGrants(); },
     openAuditLog: () => {
-      void shell.openPath(path.join(store.dir, 'audit.log')).then((error) => {
+      shell.openPath(path.join(store.dir, 'audit.log')).then((error) => {
         if (error) dialog.showErrorBox(TITLE, '아직 감사 로그가 없습니다. 도구가 한 번이라도 호출되면 생깁니다.');
-      });
+      }).catch(reportActionError('감사 로그 열기'));
     },
-    showPermissionGuide: () => { void showPermissionGuide(true); },
+    showPermissionGuide: () => { showPermissionGuide(true).catch(reportActionError('권한 안내')); },
     setOpenAtLogin: (enabled) => { app.setLoginItemSettings({ openAtLogin: enabled }); },
-    checkForUpdates: () => { void updates.checkNow(); },
+    checkForUpdates: () => { updates.checkNow().catch(reportActionError('업데이트 확인')); },
     quit: () => { app.quit(); },
   };
 
@@ -219,7 +246,7 @@ async function boot(): Promise<void> {
   };
   tray.on('click', popUp);
   tray.on('right-click', popUp);
-  app.on('second-instance', () => { void showPairingCode(agent); });
+  app.on('second-instance', () => { showPairingCode(agent).catch(reportActionError('페어링 코드 표시')); });
 
   if (process.platform === 'darwin') {
     const stateFile = path.join(app.getPath('userData'), 'desktop-state.json');
@@ -229,7 +256,7 @@ async function boot(): Promise<void> {
       await showPermissionGuide(false);
     }
   }
-  if (store.get().pairings.length === 0) void showPairingCode(agent);
+  if (store.get().pairings.length === 0) showPairingCode(agent).catch(reportActionError('페어링 코드 표시'));
 }
 
 app.on('web-contents-created', (_event, contents) => {
