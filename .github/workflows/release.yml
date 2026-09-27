@@ -2,8 +2,9 @@ name: release
 on:
   push:
     tags: ['v*']
+# 기본은 읽기 전용. 쓰기 권한은 GitHub Release 를 만드는 release 잡에만 준다.
 permissions:
-  contents: write
+  contents: read
 env:
   ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 jobs:
@@ -11,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: 태그와 패키지 버전 일치 확인
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -34,6 +37,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -87,19 +92,26 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      # 초안(draft)으로만 만든다 — 관리자가 확인한 뒤 GitHub 에서 직접 게시한다.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          draft: true
           files: artifacts/*
           generate_release_notes: true
 
   npm:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
@@ -108,6 +120,8 @@ jobs:
         run: echo "NPM_TOKEN 시크릿이 없어 npm 배포를 건너뜁니다."
       - uses: actions/checkout@v4
         if: env.NPM_TOKEN != ''
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         if: env.NPM_TOKEN != ''
       - uses: actions/setup-node@v4
@@ -119,6 +133,7 @@ jobs:
       - if: env.NPM_TOKEN != ''
         run: pnpm install --frozen-lockfile
       - if: env.NPM_TOKEN != ''
-        run: pnpm --filter aeyes-local-agent publish --no-git-checks --access public
+        run: pnpm --filter aeyes-local-agent publish --no-git-checks --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
