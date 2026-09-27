@@ -187,6 +187,8 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
       const mcp = createMcpServer(tools, {
         allowedDirs: store.get().allowedDirs,
         deniedDirs: [store.dir],
+        configDir: store.dir,
+        databases,
         gate,
         audit,
         identity: { origin, pairingId: record.id, accountLabel: record.accountLabel },

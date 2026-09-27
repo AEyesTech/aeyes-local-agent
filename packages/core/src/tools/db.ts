@@ -44,8 +44,8 @@ export function toCell(value: unknown): unknown {
   }
 }
 
-/** 오류 메시지에서 연결 문자열 전체와 비밀번호(원문·디코딩)를 *** 로 가린다. */
-export function redactSecrets(message: string, connectionString: string): string {
+/** 연결 문자열에서 가려야 할 비밀 문자열들: 연결 문자열 전체와 비밀번호(원문·디코딩). */
+export function connectionSecrets(connectionString: string): string[] {
   const secrets = new Set<string>([connectionString]);
   const addPassword = (password: string) => {
     if (!password) return;
@@ -70,11 +70,32 @@ export function redactSecrets(message: string, connectionString: string): string
     addPassword(m[1]);
     addPassword(m[1].replace(/\+/g, ' '));
   }
-  let out = message;
-  for (const secret of [...secrets].filter((s) => s.length > 0).sort((a, b) => b.length - a.length)) {
+  return [...secrets].filter((s) => s.length > 0);
+}
+
+/** JSON 문자열로 몇 번 감싸질 수 있는지. 설정 파일(JSON) 내용이 도구 결과(JSON) 안에 들어가면 두 번 이스케이프된다. */
+const JSON_ESCAPE_DEPTH = 3;
+
+/** 비밀 문자열을 긴 것부터 *** 로 바꾼다. JSON 문자열 안에 (여러 번) 이스케이프된 형태도 함께 가린다. */
+export function redactAll(text: string, secrets: Iterable<string>): string {
+  const all = new Set<string>();
+  for (const secret of secrets) {
+    let form = secret;
+    for (let depth = 0; depth <= JSON_ESCAPE_DEPTH && form; depth += 1) {
+      all.add(form);
+      form = JSON.stringify(form).slice(1, -1);
+    }
+  }
+  let out = text;
+  for (const secret of [...all].sort((a, b) => b.length - a.length)) {
     out = out.split(secret).join('***');
   }
-  return out.slice(0, ERROR_MAX);
+  return out;
+}
+
+/** 오류 메시지에서 연결 문자열 전체와 비밀번호(원문·디코딩)를 *** 로 가린다. */
+export function redactSecrets(message: string, connectionString: string): string {
+  return redactAll(message, connectionSecrets(connectionString)).slice(0, ERROR_MAX);
 }
 
 function isTimeout(error: unknown): boolean {

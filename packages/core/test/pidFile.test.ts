@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isPidAlive, PID_FILE, readRunningPid, removePidFile, writePidFile } from '../src/pidFile.js';
+import { AgentAlreadyRunningError, isPidAlive, PID_FILE, readRunningPid, removePidFile, writePidFile } from '../src/pidFile.js';
 
 const dir = () => mkdtemp(path.join(tmpdir(), 'aeyes-pid-'));
 
@@ -30,6 +30,49 @@ describe('pidFile', () => {
     expect(await readFile(path.join(d, PID_FILE), 'utf8')).toBe('999999');
     await removePidFile(d, 999999);
     await expect(stat(path.join(d, PID_FILE))).rejects.toThrow();
+  });
+
+  it('writePidFile 은 배타적으로 만든다: 살아 있는 다른 pid 가 있으면 AgentAlreadyRunningError(EEXIST)', async () => {
+    const d = await dir();
+    await writeFile(path.join(d, PID_FILE), '4242');
+    const error = await writePidFile(d, 7, () => true).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AgentAlreadyRunningError);
+    expect((error as AgentAlreadyRunningError).pid).toBe(4242);
+    expect((error as AgentAlreadyRunningError).code).toBe('EEXIST');
+    expect(await readFile(path.join(d, PID_FILE), 'utf8')).toBe('4242');
+  });
+
+  it('writePidFile: 죽은 pid·깨진 파일은 지우고 새로 만든다', async () => {
+    const d = await dir();
+    await writeFile(path.join(d, PID_FILE), '4242');
+    await writePidFile(d, 7, () => false);
+    expect(await readFile(path.join(d, PID_FILE), 'utf8')).toBe('7');
+    await writeFile(path.join(d, PID_FILE), 'garbage');
+    const old = new Date(Date.now() - 60_000);
+    await utimes(path.join(d, PID_FILE), old, old);
+    await writePidFile(d, 8, () => true);
+    expect(await readFile(path.join(d, PID_FILE), 'utf8')).toBe('8');
+  });
+
+  it('writePidFile: 방금 만들어진 빈 파일(다른 인스턴스가 쓰는 중)은 실행 중으로 본다', async () => {
+    const d = await dir();
+    await writeFile(path.join(d, PID_FILE), '');
+    await expect(writePidFile(d, 9, () => true)).rejects.toBeInstanceOf(AgentAlreadyRunningError);
+    expect(await readFile(path.join(d, PID_FILE), 'utf8')).toBe('');
+  });
+
+  it('writePidFile: 자기 pid 가 이미 적혀 있으면 그대로 둔다', async () => {
+    const d = await dir();
+    await writePidFile(d, 7);
+    await expect(writePidFile(d, 7, () => true)).resolves.toBeUndefined();
+  });
+
+  it('writePidFile: 동시에 둘이 만들면 하나만 성공한다', async () => {
+    const d = await dir();
+    const results = await Promise.allSettled([writePidFile(d, 11, () => true), writePidFile(d, 12, () => true)]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(AgentAlreadyRunningError);
   });
 
   it('isPidAlive: EPERM 은 살아 있음, ESRCH 는 죽음', () => {

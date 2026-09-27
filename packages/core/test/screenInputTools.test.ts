@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { InputDriver, ScreenDriver } from '../src/native.js';
-import { createInputTools } from '../src/tools/input.js';
+import { createInputTools, TYPE_MAX } from '../src/tools/input.js';
 import { createScreenTools } from '../src/tools/screen.js';
 import type { ToolContext, ToolDef, ToolResult } from '../src/tools/types.js';
 
@@ -83,8 +83,16 @@ describe('입력 도구', () => {
     expect(errorCode(await t.mouse_click.run({ x: 1 }, ctx))).toBe('invalid_argument');
     expect(errorCode(await t.keyboard_press.run({ keys: ['capslock'] }, ctx))).toBe('invalid_argument');
     expect(errorCode(await t.keyboard_press.run({ keys: [] }, ctx))).toBe('invalid_argument');
-    expect(errorCode(await t.keyboard_type.run({ text: 'x'.repeat(2001) }, ctx))).toBe('invalid_argument');
+    expect(errorCode(await t.keyboard_type.run({ text: 'x'.repeat(TYPE_MAX + 1) }, ctx))).toBe('invalid_argument');
     expect(driver.calls).toEqual([]);
+  });
+
+  it('keyboard_type 은 한 번에 최대 500자(I1)', async () => {
+    expect(TYPE_MAX).toBe(500);
+    const driver = input();
+    const t = byName(createInputTools(driver));
+    expect(errorCode(await t.keyboard_type.run({ text: 'x'.repeat(501) }, ctx))).toBe('invalid_argument');
+    expect((await t.keyboard_type.run({ text: 'x'.repeat(500) }, ctx)).isError).toBeFalsy();
   });
 
   it('확인 창 요약에 좌표·입력 글·키가 보인다', () => {

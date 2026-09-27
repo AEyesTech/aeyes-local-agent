@@ -1,9 +1,12 @@
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfigStore } from '../src/config.js';
-import { CONFIRM_TIMEOUT_MS, ConfirmationGate, grantKey, INPUT_LOCK_TIMEOUT_MS, InputBlockedError, SESSION_GRANT_TTL_MS, sessionGrantKey } from '../src/policy/gate.js';
+import {
+  CONFIRM_TIMEOUT_MS, ConfirmationGate, grantKey, INPUT_ABANDON_MAX_MS, INPUT_LOCK_TIMEOUT_MS, INPUT_SETTLE_MS, InputBlockedError,
+  referencesConfigDir, SESSION_GRANT_TTL_MS, sessionGrantKey,
+} from '../src/policy/gate.js';
 import { ToolError } from '../src/errors.js';
 import type { ConfirmDecision, Confirmer } from '../src/policy/confirmer.js';
 
@@ -234,18 +237,21 @@ describe('입력 잠금 시간 제한', () => {
     expect(INPUT_LOCK_TIMEOUT_MS).toBe(30_000);
   });
 
-  it('끝나지 않는 입력 동작은 제한 시간 뒤 timeout 으로 실패하고, 이후 확인은 정상적으로 묻는다', async () => {
+  it('끝나지 않는 입력 동작은 제한 시간 뒤 timeout 으로 실패하고, 버려진 호출이 남아 있는 동안 새 확인은 묻지 않고 거부한다', async () => {
     const s = await store();
     const asked: string[] = [];
-    const gate = new ConfirmationGate(s, { confirm: async (req) => { asked.push(req.tool); return 'allow'; } }, CONFIRM_TIMEOUT_MS, Date.now, 30);
+    const gate = new ConfirmationGate(s, { confirm: async (req) => { asked.push(req.tool); return 'allow'; } }, CONFIRM_TIMEOUT_MS, Date.now, 30, 0);
     const hung = gate.withInputLock(() => new Promise<never>(() => undefined));
     await new Promise((r) => setTimeout(r, 0));
-    const check = gate.check({ tool: 'shell_exec', summary: 'ls', origin: 'o', accountLabel: 'a', key: 'k' });
+    const check = gate.decide({ tool: 'shell_exec', summary: 'ls', origin: 'o', accountLabel: 'a', key: 'k' });
     const error = await hung.catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ToolError);
     expect((error as ToolError).code).toBe('timeout');
-    expect(await check).toBe(true);
-    expect(asked).toEqual(['shell_exec']);
+    expect(await check).toEqual({ allowed: false, reason: 'input_unsettled' });
+    expect(await gate.check({ tool: 'fs_delete', summary: 'x', origin: 'o', accountLabel: 'a', key: 'fs_delete' })).toBe(false);
+    expect(asked).toEqual([]);
+    expect(gate.hasAbandonedInput()).toBe(true);
+    // 입력 잠금 자체는 풀려 있다.
     await expect(gate.withInputLock(async () => 'next')).resolves.toBe('next');
   });
 
@@ -254,6 +260,162 @@ describe('입력 잠금 시간 제한', () => {
     const gate = new ConfirmationGate(s, denyAll(), CONFIRM_TIMEOUT_MS, Date.now, 1_000);
     await expect(gate.withInputLock(async () => { throw new Error('driver failed'); })).rejects.toThrow('driver failed');
     await expect(gate.withInputLock(async () => 'ok')).resolves.toBe('ok');
+  });
+});
+
+describe('입력 뒤 확인 유예(C1)·버려진 입력 호출(I1) — 가짜 타이머', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('상수: 유예 1초, 버려진 입력 상한 60초', () => {
+    expect(INPUT_SETTLE_MS).toBe(1_000);
+    expect(INPUT_ABANDON_MAX_MS).toBe(60_000);
+  });
+
+  it('입력 동작이 끝난 뒤에도 INPUT_SETTLE_MS 동안은 확인을 띄우지 않는다', async () => {
+    const s = await store();
+    vi.useFakeTimers();
+    const confirm = vi.fn(async () => 'allow' as const);
+    const gate = new ConfirmationGate(s, { confirm });
+    let finish: () => void = () => undefined;
+    const running = gate.withInputLock(() => new Promise<void>((resolve) => { finish = resolve; }));
+    await vi.advanceTimersByTimeAsync(0);
+    const check = gate.check({ ...base, key: 'k' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(confirm).not.toHaveBeenCalled();
+    finish();
+    await running;
+    await vi.advanceTimersByTimeAsync(INPUT_SETTLE_MS - 1);
+    expect(confirm).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(await check).toBe(true);
+  });
+
+  it('유예 중에 이미 줄 서 있던 입력 동작이 있으면 그 동작의 유예까지 기다린다', async () => {
+    const s = await store();
+    vi.useFakeTimers();
+    const confirm = vi.fn(async () => 'allow' as const);
+    const gate = new ConfirmationGate(s, { confirm });
+    let finishA: () => void = () => undefined;
+    const a = gate.withInputLock(() => new Promise<void>((resolve) => { finishA = resolve; }));
+    const b = gate.withInputLock(async () => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    const check = gate.check({ ...base, key: 'k' });
+    finishA();
+    await a;
+    // b 는 확인 대기 중이라 busy 로 거부되지만, 그 뒤에도 유예를 지킨다.
+    await expect(b).rejects.toBeInstanceOf(InputBlockedError);
+    await vi.advanceTimersByTimeAsync(INPUT_SETTLE_MS - 1);
+    expect(confirm).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await check).toBe(true);
+  });
+
+  it('입력 동작이 없으면 확인을 바로 띄운다', async () => {
+    const s = await store();
+    vi.useFakeTimers();
+    const confirm = vi.fn(async () => 'allow' as const);
+    const gate = new ConfirmationGate(s, { confirm });
+    const check = gate.check({ ...base, key: 'k' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(await check).toBe(true);
+  });
+
+  it('버려진 입력 호출이 끝나면 다시 확인을 묻는다', async () => {
+    const s = await store();
+    vi.useFakeTimers();
+    const confirm = vi.fn(async () => 'allow' as const);
+    const gate = new ConfirmationGate(s, { confirm }, CONFIRM_TIMEOUT_MS, Date.now, 1_000);
+    let finishDriver: () => void = () => undefined;
+    const call = gate.withInputLock(() => new Promise<void>((resolve) => { finishDriver = resolve; }));
+    const outcome = call.catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await outcome).toBeInstanceOf(ToolError);
+    await vi.advanceTimersByTimeAsync(INPUT_SETTLE_MS);
+    expect(await gate.decide({ ...base, key: 'k' })).toEqual({ allowed: false, reason: 'input_unsettled' });
+    expect(confirm).not.toHaveBeenCalled();
+    finishDriver();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.hasAbandonedInput()).toBe(false);
+    expect(await gate.check({ ...base, key: 'k' })).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('끝나지 않는 버려진 호출은 시간 초과 뒤 INPUT_ABANDON_MAX_MS 가 지나면 더 이상 막지 않는다', async () => {
+    const s = await store();
+    vi.useFakeTimers();
+    const confirm = vi.fn(async () => 'allow' as const);
+    const gate = new ConfirmationGate(s, { confirm }, CONFIRM_TIMEOUT_MS, Date.now, 1_000);
+    const outcome = gate.withInputLock(() => new Promise<never>(() => undefined)).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await outcome).toBeInstanceOf(ToolError);
+    await vi.advanceTimersByTimeAsync(INPUT_ABANDON_MAX_MS - 1);
+    expect(await gate.check({ ...base, key: 'k' })).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await gate.check({ ...base, key: 'k' })).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('확인을 기다리는 동안 입력이 시간 초과로 버려지면 확인을 띄우지 않고 거부한다', async () => {
+    const s = await store();
+    vi.useFakeTimers();
+    const confirm = vi.fn(async () => 'allow' as const);
+    const gate = new ConfirmationGate(s, { confirm }, CONFIRM_TIMEOUT_MS, Date.now, 1_000);
+    const outcome = gate.withInputLock(() => new Promise<never>(() => undefined)).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    const check = gate.decide({ ...base, key: 'k' });
+    await vi.advanceTimersByTimeAsync(1_000 + INPUT_SETTLE_MS);
+    expect(await outcome).toBeInstanceOf(ToolError);
+    expect(await check).toEqual({ allowed: false, reason: 'input_unsettled' });
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('도구가 스스로 던진 timeout 오류는 버려진 호출로 보지 않는다', async () => {
+    const s = await store();
+    const gate = new ConfirmationGate(s, { confirm: async () => 'allow' }, CONFIRM_TIMEOUT_MS, Date.now, 1_000, 0);
+    await expect(gate.withInputLock(async () => { throw new ToolError('timeout', 'x'); })).rejects.toBeInstanceOf(ToolError);
+    expect(gate.hasAbandonedInput()).toBe(false);
+  });
+});
+
+describe('설정 폴더를 가리키는 shell_exec 는 항상 허용 불가(I2)', () => {
+  const home = '/Users/me';
+  const cfg = '/Users/me/.aeyes-agent';
+
+  it('설정 폴더 경로·~ 상대 경로·폴더 이름·aeyes-agent·config.json 을 가리키면 null', () => {
+    for (const command of [
+      'cat /Users/me/.aeyes-agent/config.json', 'cat ~/.aeyes-agent/config.json', 'less ~/.AEYES-AGENT/x',
+      'grep -r pass /Users/me/.aeyes-agent', 'ls .aeyes-agent', 'cat AEYES-AGENT', 'cat config.json', 'type Config.JSON',
+    ]) {
+      expect(grantKey('shell_exec', { command }, cfg), command).toBeNull();
+    }
+    // configDir 없이도 이름 규칙은 적용된다.
+    expect(grantKey('shell_exec', { command: 'cat ~/.aeyes-agent/config.json' })).toBeNull();
+    expect(grantKey('shell_exec', { command: 'git status' }, cfg)).toBe('shell_exec:git');
+  });
+
+  it('사용자 지정 설정 폴더는 실제 경로·~ 상대 경로·폴더 이름으로 판단', () => {
+    const custom = '/Users/me/work/agentcfg';
+    expect(referencesConfigDir('cat /Users/me/work/agentcfg/x', custom, home)).toBe(true);
+    expect(referencesConfigDir('cat ~/work/agentcfg/x', custom, home)).toBe(true);
+    expect(referencesConfigDir('cd agentcfg', custom, home)).toBe(true);
+    expect(referencesConfigDir('ls ~/work', custom, home)).toBe(false);
+  });
+
+  it('Windows 설정 폴더(%APPDATA%\\aeyes-agent)도 이름으로 걸린다', () => {
+    expect(grantKey('shell_exec', { command: 'type %APPDATA%\\aeyes-agent\\config.json' }, 'C:\\Users\\me\\AppData\\Roaming\\aeyes-agent')).toBeNull();
+  });
+
+  it('항상 허용된 명령이라도 설정 폴더를 가리키면 기록을 보지 않고 묻는다', async () => {
+    const s = await store();
+    await s.update((c) => { c.alwaysAllow.push({ key: 'shell_exec:cat', createdAt: 'x' }); });
+    const confirm = vi.fn(async () => 'deny' as const);
+    const gate = new ConfirmationGate(s, { confirm });
+    const key = grantKey('shell_exec', { command: `cat ${s.dir}/config.json` }, s.dir);
+    expect(key).toBeNull();
+    expect(await gate.check({ ...base, summary: 'cat', key })).toBe(false);
+    expect(confirm).toHaveBeenCalledTimes(1);
   });
 });
 

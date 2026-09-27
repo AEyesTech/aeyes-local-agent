@@ -2,12 +2,13 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { AuditLog } from '../src/audit.js';
 import { createMcpServer } from '../src/mcp.js';
 import { ConfigStore } from '../src/config.js';
-import { ConfirmationGate } from '../src/policy/gate.js';
+import { ConfirmationGate, INPUT_LOCK_TIMEOUT_MS } from '../src/policy/gate.js';
 import type { ConfirmDecision } from '../src/policy/confirmer.js';
 import { defineTool, jsonResult, type ToolDef } from '../src/tools/types.js';
 import { buildDefaultTools } from '../src/tools/index.js';
@@ -61,11 +62,12 @@ describe('createMcpServer 입력 도구', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'aeyes-mcp-'));
     const store = await ConfigStore.open(path.join(dir, '.a'), dir);
     let release: (d: ConfirmDecision) => void = () => undefined;
+    // 입력 뒤 확인 유예(INPUT_SETTLE_MS)는 0 으로 — 여기서는 busy 거부만 본다.
     const gate = new ConfirmationGate(store, {
       confirm: (req) => req.tool === 'mouse_move'
         ? Promise.resolve<ConfirmDecision>('session')
         : new Promise<ConfirmDecision>((r) => { release = r; }),
-    });
+    }, 120_000, Date.now, INPUT_LOCK_TIMEOUT_MS, 0);
     const ran: string[] = [];
     const client = await connect([fakeTool('mouse_move', ran), fakeTool('shell_exec', ran)], gate, 'p1', dir);
     expect((await client.callTool({ name: 'mouse_move', arguments: {} })).isError).toBeFalsy();
@@ -113,6 +115,121 @@ describe('createMcpServer 입력 도구', () => {
     expect(JSON.parse((result.content as Array<{ text: string }>)[0].text).error).toBe('timeout');
     const lines = (await readFile(path.join(dir, 'audit.log'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
     expect(lines.map((l) => `${l.tool}:${l.result}`)).toEqual(['mouse_click:error']);
+    await client.close();
+  });
+});
+
+describe('createMcpServer 버려진 입력 호출 뒤 확인 거부(I1)', () => {
+  it('시간 초과된 입력 호출이 끝나지 않았으면 확인이 필요한 호출은 묻지 않고 거부하고 denied 로 남긴다', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'aeyes-mcp-'));
+    const store = await ConfigStore.open(path.join(dir, '.a'), dir);
+    let asked = 0;
+    const gate = new ConfirmationGate(store, { confirm: async (req) => { asked += 1; return req.tool === 'keyboard_type' ? 'session' : 'allow'; } }, 120_000, Date.now, 30, 0);
+    const ran: string[] = [];
+    const hung = defineTool({
+      name: 'keyboard_type', description: 'x', inputSchema: {}, readOnly: false, confirm: 'always',
+      summarize: () => 'x', handler: () => new Promise<never>(() => undefined),
+    });
+    const shell = defineTool({
+      name: 'shell_exec', description: 'x', inputSchema: {}, readOnly: false, confirm: 'always',
+      summarize: () => 'ls', handler: async () => { ran.push('shell_exec'); return jsonResult({ ok: true }); },
+    });
+    const server = createMcpServer([hung, shell], {
+      allowedDirs: [dir], gate, audit: new AuditLog(path.join(dir, 'audit.log')),
+      identity: { origin: 'https://studio.aeyes.dev', pairingId: 'p1', accountLabel: 'a' },
+    });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 't', version: '1' });
+    await client.connect(clientSide);
+    const timedOut = await client.callTool({ name: 'keyboard_type', arguments: {} });
+    expect(JSON.parse((timedOut.content as Array<{ text: string }>)[0].text).error).toBe('timeout');
+    const denied = await client.callTool({ name: 'shell_exec', arguments: {} });
+    const body = JSON.parse((denied.content as Array<{ text: string }>)[0].text);
+    expect(body.error).toBe('denied_locally');
+    expect(body.message).toContain('시간 초과된 마우스·키보드 동작');
+    expect(ran).toEqual([]);
+    expect(asked).toBe(1);
+    const lines = (await readFile(path.join(dir, 'audit.log'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines.map((l) => `${l.tool}:${l.result}`)).toEqual(['keyboard_type:error', 'shell_exec:denied']);
+    await client.close();
+  });
+});
+
+describe('createMcpServer 결과 가리기(I2)', () => {
+  const pg = 'postgres://app:S3cr"et\\pw@db.local:5432/shop';
+  const my = 'mysql://root:p%40ss@127.0.0.1:3306/erp';
+
+  async function run(text: string, isError = false) {
+    const dir = await mkdtemp(path.join(tmpdir(), 'aeyes-mcp-'));
+    const store = await ConfigStore.open(path.join(dir, '.a'), dir);
+    const gate = new ConfirmationGate(store, { confirm: async () => 'allow' });
+    const tool = defineTool({
+      name: 'shell_exec', description: 'x', inputSchema: {}, readOnly: false, confirm: 'never',
+      summarize: () => 'x',
+      handler: async () => (isError
+        ? { isError: true, content: [{ type: 'text' as const, text }] }
+        : jsonResult({ stdout: text })),
+    });
+    const server = createMcpServer([tool], {
+      allowedDirs: [dir], gate, audit: new AuditLog(path.join(dir, 'audit.log')),
+      identity: { origin: 'https://studio.aeyes.dev', pairingId: 'p1', accountLabel: 'a' },
+      databases: () => [
+        { name: 'shop', kind: 'postgres', connectionString: pg, readOnly: true },
+        { name: 'erp', kind: 'mysql', connectionString: my, readOnly: false },
+      ],
+    });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 't', version: '1' });
+    await client.connect(clientSide);
+    const result = await client.callTool({ name: 'shell_exec', arguments: {} });
+    await client.close();
+    return (result.content as Array<{ text: string }>)[0].text;
+  }
+
+  it('JSON 결과 안의 연결 문자열·비밀번호(이스케이프 포함)를 가린다', async () => {
+    const out = await run(`{"databases":[{"connectionString":${JSON.stringify(pg)}}]} pw=S3cr"et\\pw my=${my} p@ss`);
+    expect(out).not.toContain('S3cr');
+    expect(out).not.toContain('p%40ss');
+    expect(out).not.toContain('p@ss');
+    expect(out).toContain('***');
+    expect(JSON.parse(out).stdout).toContain('pw=***');
+  });
+
+  it('오류 결과 글도 가린다', async () => {
+    const out = await run(`failed with ${my}`, true);
+    expect(out).toBe('failed with ***');
+  });
+
+  it('DB 가 없으면 결과를 그대로 둔다', async () => {
+    const { redactResult } = await import('../src/mcp.js');
+    const result = { content: [{ type: 'text' as const, text: 'hello' }] };
+    expect(redactResult(result, [])).toBe(result);
+  });
+});
+
+describe('createMcpServer 설정 폴더 명령(I2)', () => {
+  it('configDir 를 가리키는 shell_exec 는 항상 허용을 제안하지 않는다', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'aeyes-mcp-'));
+    const store = await ConfigStore.open(path.join(dir, 'cfgdir'), dir);
+    const seen: Array<boolean | undefined> = [];
+    const gate = new ConfirmationGate(store, { confirm: async (req) => { seen.push(req.alwaysAllowed); return 'deny'; } });
+    const tool = defineTool({
+      name: 'shell_exec', description: 'x', inputSchema: { command: z.string() }, readOnly: false, confirm: 'always',
+      summarize: (a) => String(a.command), handler: async () => jsonResult({ ok: true }),
+    });
+    const server = createMcpServer([tool], {
+      allowedDirs: [dir], gate, audit: new AuditLog(path.join(dir, 'audit.log')), configDir: store.dir,
+      identity: { origin: 'https://studio.aeyes.dev', pairingId: 'p1', accountLabel: 'a' },
+    });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 't', version: '1' });
+    await client.connect(clientSide);
+    await client.callTool({ name: 'shell_exec', arguments: { command: `cat ${store.dir}/x` } });
+    await client.callTool({ name: 'shell_exec', arguments: { command: 'git status' } });
+    expect(seen).toEqual([false, true]);
     await client.close();
   });
 });

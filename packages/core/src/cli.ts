@@ -12,7 +12,7 @@ import { ConfigStore, defaultConfigDir, DEFAULT_PORT, PORT_RANGE_END, type Datab
 import { addDatabase, formatDatabaseList, removeDatabase } from './dbCli.js';
 import { autoAllowConfirmer } from './policy/confirmer.js';
 import { unsafeAllowedDirReason } from './paths.js';
-import { readRunningPid, removePidFile, writePidFile } from './pidFile.js';
+import { AgentAlreadyRunningError, readRunningPid, removePidFile, writePidFile } from './pidFile.js';
 import { startAgent as defaultStartAgent } from './server.js';
 import { sanitizeForTerminal, TerminalIO } from './terminal.js';
 import { AGENT_VERSION } from './version.js';
@@ -46,6 +46,9 @@ const HELP = `사용법: aeyes-local-agent [옵션]
   --version, --help
 
 실행 중 명령: ${COMMANDS}
+
+PC 확인: 프롬프트마다 보이는 2자리 코드를 입력합니다(예: 47 = 이번만 허용, 47a = 항상 허용, 47s = 이 세션 동안 허용).
+그 밖의 입력(y·a 포함)은 거부이고, 프롬프트가 뜨기 전·직후 0.3초 안에 들어온 입력은 무시됩니다.
 
 DB 연결 문자열은 명령 인자로 받지 않고 실행 후 입력받습니다(화면에 보이지 않음). 새 DB 는 기본 읽기 전용입니다.`;
 
@@ -215,7 +218,15 @@ export async function main(
     io.error.write(`${startErrorMessage(error)}\n`);
     return 1;
   }
-  await writePidFile(store.dir);
+  try {
+    await writePidFile(store.dir);
+  } catch (error) {
+    // 시작 검사 뒤에 다른 에이전트가 먼저 pid 파일을 만든 경우(경합) 등.
+    terminal.close();
+    await agent.close().catch(() => undefined);
+    io.error.write(`${error instanceof AgentAlreadyRunningError ? error.message : `pid 파일을 만들 수 없습니다: ${(error as Error)?.message ?? String(error)}`}\n`);
+    return 1;
+  }
   const showCode = () => {
     const { code, expiresAt } = agent.pairing.createCode();
     io.output.write(`\n페어링 코드: ${code}  (${new Date(expiresAt).toLocaleTimeString()}까지, AeyeStudio 설정 > 내 PC 연결에 입력)\n`);

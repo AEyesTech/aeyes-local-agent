@@ -1,8 +1,13 @@
 /**
  * 터미널 입출력: 로컬 확인 프롬프트와 대화형 명령(p/u/q)을 한 입력 스트림으로 처리한다.
  * 확인은 큐로 한 번에 하나씩 보여 주고, 대기 중인 확인이 있으면 입력 줄은 그 답이 된다.
+ * 허용하려면 프롬프트마다 새로 뽑은 2자리 코드(10~99)를 입력해야 한다("47" 이번만, "47a" 항상, "47s" 세션).
+ * 그 밖의 입력(y·a 포함)은 모두 거부 — 자동 입력(keyboard_type 등)이 미리 쳐 둔 "y" 로 확인을 통과하지 못하게.
+ * 프롬프트가 뜨기 전에 들어와 있던 입력과 뜬 직후 PROMPT_INPUT_GRACE_MS 안에 도착한 줄은 버린다.
  */
+import { randomInt } from 'node:crypto';
 import { createInterface, type Interface } from 'node:readline';
+import type { Readable } from 'node:stream';
 import type { ConfirmDecision, Confirmer, ConfirmRequest } from './policy/confirmer.js';
 import { SESSION_GRANT_TTL_MS } from './policy/gate.js';
 
@@ -11,6 +16,20 @@ export const SUMMARY_DISPLAY_MAX = 500;
 /** 화면에 떠 있는 확인 외에 줄 세워 둘 수 있는 확인 수. 넘치면(요청 폭주) 새 확인은 즉시 거부한다. */
 export const MAX_QUEUED_CONFIRMATIONS = 10;
 const LABEL_DISPLAY_MAX = 200;
+/** 프롬프트가 뜬 뒤 이 시간 안에 도착한 줄은 답으로 보지 않는다(미리 버퍼에 쌓여 있던 입력일 수 있다). */
+export const PROMPT_INPUT_GRACE_MS = 300;
+
+export interface TerminalIOOptions {
+  /** 시계(테스트용). */
+  now?: () => number;
+  /** 확인 코드 생성기(테스트용). 기본은 crypto.randomInt(10, 100). */
+  code?: () => number;
+}
+
+/** 확인 코드: 10~99 의 2자리 수. */
+export function randomConfirmCode(): number {
+  return randomInt(10, 100);
+}
 
 /**
  * 원격(웹)에서 온 글을 터미널에 보이기 전에 정화한다. 확인 프롬프트는 마지막 방어선이라
@@ -50,6 +69,10 @@ interface Pending {
   signal: AbortSignal;
   resolve(decision: ConfirmDecision): void;
   onAbort?: () => void;
+  /** 화면에 뜬 뒤 정해진다. */
+  code?: string;
+  shownAt?: number;
+  ignoredNoticeShown?: boolean;
 }
 
 export class TerminalIO implements Confirmer {
@@ -59,10 +82,18 @@ export class TerminalIO implements Confirmer {
   private commandHandler: ((line: string) => void) | null = null;
   private closed = false;
   private explicitClose = false;
+  private readonly now: () => number;
+  private readonly nextCode: () => number;
 
-  constructor(input: NodeJS.ReadableStream, private readonly output: NodeJS.WritableStream) {
+  constructor(
+    private readonly input: NodeJS.ReadableStream,
+    private readonly output: NodeJS.WritableStream,
+    opts: TerminalIOOptions = {}
+  ) {
+    this.now = opts.now ?? Date.now;
+    this.nextCode = opts.code ?? randomConfirmCode;
     this.rl = createInterface({ input, terminal: false });
-    this.rl.on('line', (line) => this.onLine(line.trim()));
+    this.rl.on('line', (line) => this.onLine(line.trim(), this.now()));
     this.rl.on('close', () => this.onClosed());
   }
 
@@ -119,34 +150,63 @@ export class TerminalIO implements Confirmer {
     if (!next) return;
     this.active = next;
     const { req } = next;
+    const code = String(this.nextCode());
+    next.code = code;
+    // 프롬프트 이전에 쌓인 입력은 답이 아니다. TTY 면 대기 중인 입력을 비우고(비운 줄도 유예 시간 안이라 버려진다),
+    // 그렇지 않아도 유예 시간 안에 도착한 줄은 버린다.
+    next.shownAt = this.now();
+    this.drainPendingInput();
     const always = req.alwaysAllowed === true && req.grantKey
-      ? `  [a] 항상 허용 (범위: ${sanitizeForTerminal(req.grantKey, LABEL_DISPLAY_MAX)})`
+      ? `  [${code}a] 항상 허용 (범위: ${sanitizeForTerminal(req.grantKey, LABEL_DISPLAY_MAX)})`
       : '';
     const session = req.sessionAllowed === true
-      ? `  [s] 이 세션 동안 허용(마우스·키보드, ${SESSION_GRANT_TTL_MS / 60_000}분)`
+      ? `  [${code}s] 이 세션 동안 허용(마우스·키보드, ${SESSION_GRANT_TTL_MS / 60_000}분)`
       : '';
     const account = sanitizeForTerminal(req.accountLabel || 'AeyeStudio', LABEL_DISPLAY_MAX);
     const origin = sanitizeForTerminal(req.origin, LABEL_DISPLAY_MAX);
     this.output.write(
       `\n[확인 필요] ${account} (${origin})\n` +
       `  ${sanitizeForTerminal(req.tool, LABEL_DISPLAY_MAX)}: ${truncateSummaryForDisplay(sanitizeForTerminal(req.summary), SUMMARY_DISPLAY_MAX)}\n` +
-      `  [y] 허용${always}${session}  [N] 거부 > `
+      `  허용하려면 코드를 입력하세요 — [${code}] 이번만 허용${always}${session}  [그 외] 거부 > `
     );
   }
 
-  private onLine(line: string): void {
-    if (this.active) {
+  /** TTY 에 이미 들어와 있는 입력을 읽어 버린다(읽힌 줄은 onLine 에서 유예 시간 안이라 버려진다). */
+  private drainPendingInput(): void {
+    const stream = this.input as NodeJS.ReadableStream & Partial<Pick<Readable, 'read'>> & { isTTY?: boolean };
+    if (stream.isTTY !== true || typeof stream.read !== 'function') return;
+    try {
+      for (let i = 0; i < 1000 && stream.read() !== null; i += 1) {
+        // 버린다.
+      }
+    } catch {
+      // 비우지 못해도 유예 시간 규칙이 남아 있다.
+    }
+  }
+
+  private onLine(line: string, arrivedAt: number): void {
+    const active = this.active;
+    if (active) {
+      if (arrivedAt < (active.shownAt ?? 0) + PROMPT_INPUT_GRACE_MS) {
+        // 프롬프트가 뜨기 전·직후에 쌓여 있던 입력 — 답으로 보지 않는다.
+        if (!active.ignoredNoticeShown) {
+          active.ignoredNoticeShown = true;
+          this.output.write('\n(확인이 뜨기 전에 들어온 입력은 무시했습니다. 코드를 다시 입력하세요) > ');
+        }
+        return;
+      }
       const answer = line.toLowerCase();
-      // "항상 허용"은 요청이 허용 가능하다고 표시한 경우에만 받는다(아니면 a 는 이번만 허용).
-      // "세션 허용"은 제시하지 않은 요청에서 s 를 누르면 보수적으로 거부한다.
-      const canAlways = this.active.req.alwaysAllowed === true && !!this.active.req.grantKey;
-      const canSession = this.active.req.sessionAllowed === true;
+      const code = active.code ?? '';
+      // "항상 허용"·"세션 허용"은 그 선택지를 제시한 경우에만 받는다. 그 밖의 모든 입력은 거부.
+      const canAlways = active.req.alwaysAllowed === true && !!active.req.grantKey;
+      const canSession = active.req.sessionAllowed === true;
       const decision: ConfirmDecision =
-        answer === 'y' ? 'allow'
-          : answer === 'a' ? (canAlways ? 'always' : 'allow')
-            : answer === 's' ? (canSession ? 'session' : 'deny')
-              : 'deny';
-      this.finish(this.active, decision, decision === 'deny' ? '거부했습니다.\n' : '허용했습니다.\n');
+        code === '' ? 'deny'
+          : answer === code ? 'allow'
+            : answer === `${code}a` && canAlways ? 'always'
+              : answer === `${code}s` && canSession ? 'session'
+                : 'deny';
+      this.finish(active, decision, decision === 'deny' ? '거부했습니다.\n' : '허용했습니다.\n');
       return;
     }
     if (line) this.commandHandler?.(line);

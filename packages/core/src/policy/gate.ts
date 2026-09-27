@@ -4,8 +4,11 @@
  * 셸 제어 문자·래퍼 명령·인자가 있는 앱 실행·파일 열기·마우스/키보드·DB 쓰기는 매번 묻는다.
  * 마우스·키보드는 "이 세션 동안 허용"(메모리 전용, 페어링별, 60분)만 있다.
  * 입력 도구가 확인 창·터미널 프롬프트를 스스로 누르지 못하도록 확인 대기 중에는 입력을 막고(withInputLock),
- * 입력 동작 중에 온 확인은 입력이 끝난 뒤에 띄운다.
+ * 입력 동작 중에 온 확인은 입력이 끝나고 INPUT_SETTLE_MS 가 더 지난 뒤에 띄운다(OS 입력 버퍼에 남은 키가 먼저 소진되게).
+ * 시간 초과로 버려진 입력 호출이 아직 끝나지 않았으면(최대 INPUT_ABANDON_MAX_MS) 새 확인은 띄우지 않고 즉시 거부한다.
  */
+import { homedir } from 'node:os';
+import path from 'node:path';
 import type { ConfigStore } from '../config.js';
 import { ToolError } from '../errors.js';
 import type { ConfirmDecision, Confirmer, ConfirmRequest } from './confirmer.js';
@@ -15,11 +18,41 @@ export const CONFIRM_TIMEOUT_MS = 120_000;
 export const SESSION_GRANT_TTL_MS = 60 * 60_000;
 /** 입력 동작 하나가 잠금을 쥘 수 있는 최대 시간. 드라이버가 멈춰도 이후 확인·입력이 영영 막히지 않게 한다. */
 export const INPUT_LOCK_TIMEOUT_MS = 30_000;
+/** 입력 동작이 끝난 뒤 확인을 띄우기 전까지 더 기다리는 시간. 드라이버가 돌아온 뒤에도 OS 에 남은 입력이 확인을 누르지 못하게 한다. */
+export const INPUT_SETTLE_MS = 1_000;
+/**
+ * 시간 초과로 버려진 입력 호출(드라이버가 아직 타이핑 중일 수 있음)을 "끝나지 않음"으로 보는 최대 시간(시간 초과 시점부터).
+ * 그동안 새 확인은 즉시 거부한다 — 계속되는 타이핑이 확인에 답하지 못하게.
+ */
+export const INPUT_ABANDON_MAX_MS = 60_000;
 /** 마우스·키보드 입력 도구. "항상 허용"은 없고 "이 세션 동안 허용"만 있다. */
 export const INPUT_TOOLS: ReadonlySet<string> = new Set(['mouse_move', 'mouse_click', 'keyboard_type', 'keyboard_press']);
 
 /** 셸 제어·치환·리다이렉트·그룹 문자. 하나라도 있으면 첫 단어가 실제 실행 범위를 대표하지 못한다. */
 const SHELL_CONTROL = /[;&|`$()<>{}\n\r]/;
+
+/**
+ * 설정 폴더(페어링 해시·DB 연결 문자열)를 가리킬 수 있는 명령인지. 이런 명령은 "항상 허용"으로 기록하지 않고 매번 묻는다.
+ * 실제 경로·~ 상대 경로·폴더 이름, 'aeyes-agent'(대소문자 무시), 'config.json' 을 본다.
+ */
+export function referencesConfigDir(command: string, configDir?: string, home: string = homedir()): boolean {
+  const lower = command.toLowerCase();
+  if (lower.includes('aeyes-agent') || lower.includes('config.json')) return true;
+  if (!configDir) return false;
+  const needles = new Set<string>();
+  const add = (value: string) => { if (value) needles.add(value.toLowerCase()); };
+  const resolved = path.resolve(configDir);
+  add(resolved);
+  add(resolved.replace(/\\/g, '/'));
+  add(path.basename(resolved));
+  const rel = path.relative(home, resolved);
+  if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+    add(`~/${rel.replace(/\\/g, '/')}`);
+    add(`~\\${rel.replace(/\//g, '\\')}`);
+    add(`$home/${rel.replace(/\\/g, '/')}`);
+  }
+  return [...needles].some((n) => lower.includes(n));
+}
 
 /** 다른 명령을 대신 실행하거나 임의 코드를 해석하는 머리 명령. 이 단어 단위로 허용하면 사실상 전부 허용이 된다. */
 const WRAPPER_HEADS = new Set([
@@ -37,9 +70,11 @@ function normalizeHead(head: string): string {
   return /^python[\d.]*w?$/.test(lower) ? 'python' : lower;
 }
 
-function shellGrantKey(command: string): string | null {
+export function shellGrantKey(command: string, configDir?: string): string | null {
   const trimmed = command.trim();
   if (!trimmed || SHELL_CONTROL.test(trimmed) || trimmed.includes('=')) return null;
+  // 설정 폴더를 읽는 명령(예: cat ~/.aeyes-agent/config.json)은 항상 허용된 명령이라도 매번 묻는다.
+  if (referencesConfigDir(trimmed, configDir)) return null;
   const head = trimmed.split(/\s+/)[0] ?? '';
   // 경로가 붙은 머리(./run.sh, /usr/bin/sudo, C:\x.exe)는 내용이 바뀔 수 있고 래퍼 검사를 우회하므로 허용하지 않는다.
   if (!/^[a-z0-9._+-]+$/i.test(head)) return null;
@@ -59,10 +94,10 @@ function isWebUrl(value: string): boolean {
 /**
  * "항상 허용"으로 기록할 키. 범위를 안전하게 좁힐 수 없는 요청이면 null — 그런 요청은 항상 목록을 보지 않고 매번 묻는다.
  */
-export function grantKey(tool: string, args: Record<string, unknown>): string | null {
+export function grantKey(tool: string, args: Record<string, unknown>, configDir?: string): string | null {
   // 입력 제어(세션 허용만)와 DB 쓰기(매번 확인)는 영구 허용하지 않는다.
   if (INPUT_TOOLS.has(tool) || tool === 'db_query') return null;
-  if (tool === 'shell_exec') return shellGrantKey(String(args.command ?? ''));
+  if (tool === 'shell_exec') return shellGrantKey(String(args.command ?? ''), configDir);
   if (tool === 'open_path') return isWebUrl(String(args.target ?? '')) ? 'open_path:url' : null;
   if (tool === 'open_app') {
     const extra = Array.isArray(args.args) ? args.args : [];
@@ -93,32 +128,52 @@ export interface GateRequest extends ConfirmRequest {
   pairingId?: string;
 }
 
+/** 확인 결과. 거부 사유 'input_unsettled' 는 버려진 입력 호출 때문에 확인을 띄우지 않고 거부한 경우. */
+export interface GateDecision {
+  allowed: boolean;
+  reason?: 'input_unsettled';
+}
+
 export class ConfirmationGate {
   /** `${pairingId}\n${sessionKey}` → 만료 시각. 설정 파일에는 쓰지 않는다. */
   private readonly sessionGrants = new Map<string, number>();
   private pending = 0;
+  /** 입력 동작끼리 줄 세우는 꼬리. */
   private inputTail: Promise<void> = Promise.resolve();
+  /** 입력 동작이 끝나고 INPUT_SETTLE_MS 가 지나야 풀리는 꼬리. 확인은 이것을 기다린다. */
+  private settledTail: Promise<void> = Promise.resolve();
+  /** 시간 초과로 버려졌지만 아직 끝나지 않은 입력 호출 → "끝나지 않음"으로 보는 마감 시각. */
+  private readonly abandoned = new Map<symbol, number>();
 
   constructor(
     private readonly store: ConfigStore,
     private readonly confirmer: Confirmer,
     private readonly timeoutMs: number = CONFIRM_TIMEOUT_MS,
     private readonly now: () => number = Date.now,
-    private readonly inputLockTimeoutMs: number = INPUT_LOCK_TIMEOUT_MS
+    private readonly inputLockTimeoutMs: number = INPUT_LOCK_TIMEOUT_MS,
+    private readonly inputSettleMs: number = INPUT_SETTLE_MS
   ) {}
 
   /** key 가 null 이면 "항상 허용" 불가: 기록을 보지 않고, 'always' 답도 이번만 허용으로 처리한다. */
   async check(req: GateRequest): Promise<boolean> {
+    return (await this.decide(req)).allowed;
+  }
+
+  /** check 와 같지만 거부 사유를 함께 돌려준다(감사·오류 메시지용). */
+  async decide(req: GateRequest): Promise<GateDecision> {
     const key = req.key;
-    if (key !== null && this.store.get().alwaysAllow.some((r) => r.key === key)) return true;
+    if (key !== null && this.store.get().alwaysAllow.some((r) => r.key === key)) return { allowed: true };
     const sessionId = req.sessionKey && req.pairingId ? `${req.pairingId}\n${req.sessionKey}` : null;
-    if (sessionId !== null && this.hasSessionGrant(sessionId)) return true;
+    if (sessionId !== null && this.hasSessionGrant(sessionId)) return { allowed: true };
+    // 버려진 입력 호출이 아직 타이핑 중일 수 있으면 확인을 띄우지 않는다(fail-closed).
+    if (this.hasAbandonedInput()) return { allowed: false, reason: 'input_unsettled' };
 
     let decision: ConfirmDecision;
     this.pending += 1;
     try {
-      // 마우스·키보드 동작이 진행 중이면 끝난 뒤에 확인을 띄운다 — 입력이 확인 창을 누르지 못하게.
-      await this.inputTail;
+      // 마우스·키보드 동작이 진행 중이면 끝나고 INPUT_SETTLE_MS 가 지난 뒤에 확인을 띄운다 — 입력이 확인 창을 누르지 못하게.
+      await this.waitInputSettled();
+      if (this.hasAbandonedInput()) return { allowed: false, reason: 'input_unsettled' };
       decision = await this.ask(req, key, sessionId !== null);
     } finally {
       this.pending -= 1;
@@ -127,18 +182,36 @@ export class ConfirmationGate {
     if (decision === 'session') {
       // 세션 허용을 제안하지 않은 요청이면 이번만 허용.
       if (sessionId !== null) this.sessionGrants.set(sessionId, this.now() + SESSION_GRANT_TTL_MS);
-      return true;
+      return { allowed: true };
     }
     if (decision === 'always') {
-      if (key === null) return true;
+      if (key === null) return { allowed: true };
       await this.store.update((c) => {
         if (!c.alwaysAllow.some((r) => r.key === key)) {
           c.alwaysAllow.push({ key, createdAt: new Date().toISOString() });
         }
       });
-      return true;
+      return { allowed: true };
     }
-    return decision === 'allow';
+    return { allowed: decision === 'allow' };
+  }
+
+  /** 시간 초과로 버려진 입력 호출이 아직 끝나지 않았는지(마감 INPUT_ABANDON_MAX_MS 가 지난 것은 끝난 것으로 본다). */
+  hasAbandonedInput(): boolean {
+    const t = this.now();
+    for (const [id, until] of this.abandoned) {
+      if (until <= t) this.abandoned.delete(id);
+    }
+    return this.abandoned.size > 0;
+  }
+
+  /** 기다리는 동안 새 입력 동작이 끼어들면 그것까지 기다린다. */
+  private async waitInputSettled(): Promise<void> {
+    let tail: Promise<void>;
+    do {
+      tail = this.settledTail;
+      await tail;
+    } while (tail !== this.settledTail);
   }
 
   /**
@@ -152,18 +225,34 @@ export class ConfirmationGate {
     let release: () => void = () => undefined;
     const done = new Promise<void>((resolve) => { release = resolve; });
     this.inputTail = previous.then(() => done);
+    const settleMs = this.inputSettleMs;
+    const settled = done.then(() => new Promise<void>((resolve) => { setTimeout(resolve, settleMs); }));
+    const previousSettled = this.settledTail;
+    this.settledTail = Promise.all([previousSettled, previous.then(() => settled)]).then(() => undefined);
     try {
       await previous;
       if (this.pending > 0) throw new InputBlockedError();
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let timedOut = false;
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new ToolError('timeout', `마우스·키보드 동작이 ${Math.round(this.inputLockTimeoutMs / 1000)}초 안에 끝나지 않아 중단했습니다`)),
+          () => { timedOut = true; reject(new ToolError('timeout', `마우스·키보드 동작이 ${Math.round(this.inputLockTimeoutMs / 1000)}초 안에 끝나지 않아 중단했습니다`)); },
           this.inputLockTimeoutMs
         );
       });
+      let work: Promise<T> | undefined;
       try {
-        return await Promise.race([fn(), timeout]);
+        work = fn();
+        return await Promise.race([work, timeout]);
+      } catch (error) {
+        if (timedOut && work) {
+          // 드라이버 호출은 아직 진행 중일 수 있다. 끝나거나 마감이 지날 때까지 새 확인을 거부한다.
+          const id = Symbol('abandoned-input');
+          this.abandoned.set(id, this.now() + INPUT_ABANDON_MAX_MS);
+          const forget = () => { this.abandoned.delete(id); };
+          work.then(forget, forget);
+        }
+        throw error;
       } finally {
         if (timer) clearTimeout(timer);
       }

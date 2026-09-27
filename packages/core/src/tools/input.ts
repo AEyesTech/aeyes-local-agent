@@ -8,7 +8,8 @@ import { KEY_NAMES, type InputDriver, type MouseButton } from '../native.js';
 import { defineTool, jsonResult, type ToolDef } from './types.js';
 
 const coord = z.number().int().min(-32768).max(32767);
-const TYPE_MAX = 2000;
+/** 한 번에 입력할 수 있는 최대 글자 수. 길수록 시간 초과 뒤에도 타이핑이 오래 이어지므로 짧게 둔다. */
+export const TYPE_MAX = 500;
 const keyName = z.enum(KEY_NAMES as unknown as [string, ...string[]]);
 
 export function createInputTools(driver: InputDriver): ToolDef[] {

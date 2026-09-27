@@ -150,8 +150,10 @@ export class ConfigStore {
     if (process.platform !== 'win32') await chmod(dir, 0o700).catch(() => undefined);
     const file = path.join(dir, CONFIG_FILE);
     let raw: unknown = {};
+    let exists = false;
     try {
       const text = await readFile(file, 'utf8');
+      exists = true;
       try {
         raw = JSON.parse(text);
       } catch {
@@ -163,7 +165,12 @@ export class ConfigStore {
     }
     const store = new ConfigStore(dir, normalize(raw, home));
     await Promise.all(store.current.allowedDirs.map((d) => mkdir(d, { recursive: true })));
-    await store.write();
+    // 정규화로 바뀐 것이 없으면 다시 쓰지 않는다(권한만 좁힌다).
+    if (exists && JSON.stringify(raw) === JSON.stringify(store.current)) {
+      if (process.platform !== 'win32') await chmod(file, 0o600).catch(() => undefined);
+    } else {
+      await store.write();
+    }
     return store;
   }
 

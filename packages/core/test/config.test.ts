@@ -95,6 +95,22 @@ describe('ConfigStore', () => {
     expect(await readFile(path.join(dir, 'config.json'), 'utf8')).toBe('{ broken');
   });
 
+  it('정규화로 바뀐 것이 없으면 다시 쓰지 않고, 바뀌었으면 다시 쓴다', async () => {
+    const home = await tempHome();
+    const dir = path.join(home, '.a');
+    await ConfigStore.open(dir, home);
+    const file = path.join(dir, 'config.json');
+    // 같은 내용이지만 다른 서식으로 저장 — 정규화 결과가 같으면 그대로 둔다.
+    const compact = JSON.stringify(JSON.parse(await readFile(file, 'utf8')));
+    await writeFile(file, compact);
+    await ConfigStore.open(dir, home);
+    expect(await readFile(file, 'utf8')).toBe(compact);
+    // 알 수 없는 필드가 있으면 정리해서 다시 쓴다.
+    await writeFile(file, JSON.stringify({ ...JSON.parse(compact), extra: 1 }));
+    await ConfigStore.open(dir, home);
+    expect(await readFile(file, 'utf8')).not.toContain('extra');
+  });
+
   it('알 수 없는 필드와 잘못된 타입은 기본값으로 정리한다', async () => {
     const home = await tempHome();
     const dir = path.join(home, '.a');
