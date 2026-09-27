@@ -139,7 +139,7 @@ describe('mysql 드라이버', () => {
       : [['end']]);
     const r = await createMysqlDriver(async () => module).execute('mysql://h/db', 'SELECT a FROM t', { ...opts, readOnly: true, cursor: true });
     expect(r).toEqual({ columns: ['a'], rows: [[1], [2]], rowCount: null, command: 'SELECT', truncated: true });
-    expect(state.statements).toEqual(['SET SESSION max_execution_time = 5000', 'START TRANSACTION READ ONLY', 'SELECT a FROM t']);
+    expect(state.statements).toEqual(['SET SESSION max_execution_time = 6000', 'START TRANSACTION READ ONLY', 'SELECT a FROM t']);
     expect(state.destroyed).toBe(true);
     // 상한에서 끊을 때 소켓까지 닫아 서버가 더 보내지 않게 한다.
     expect(state.streamDestroyed).toBe(true);
@@ -172,7 +172,7 @@ describe('mysql 드라이버', () => {
       : [['end']]);
     const r = await createMysqlDriver(async () => module).execute('mysql://h/db', 'UPDATE t SET a = 1', { ...opts, readOnly: false, cursor: false });
     expect(r).toEqual({ columns: [], rows: [], rowCount: 3, command: 'OK', truncated: false });
-    expect(state.statements).toEqual(['SET SESSION max_execution_time = 5000', 'START TRANSACTION', 'UPDATE t SET a = 1', 'COMMIT']);
+    expect(state.statements).toEqual(['SET SESSION max_execution_time = 6000', 'START TRANSACTION', 'UPDATE t SET a = 1', 'COMMIT']);
   });
 
   it('연결 자체가 실패하면(쿼리 이벤트 없이 연결 error 만 올 때) 멈추지 않고 그 오류로 실패한다', async () => {
@@ -203,6 +203,6 @@ describe('mysql 드라이버', () => {
       ? [['error', new Error('Unknown system variable')], ['end']]
       : sql.startsWith('SELECT') ? [['error', new Error('bad sql')], ['end']] : [['end']]);
     await expect(createMysqlDriver(async () => module).execute('mysql://h/db', 'SELECT x', { ...opts, readOnly: true, cursor: true })).rejects.toThrow('bad sql');
-    expect(state.statements).toEqual(['SET SESSION max_execution_time = 5000', 'START TRANSACTION READ ONLY', 'SELECT x', 'ROLLBACK']);
+    expect(state.statements).toEqual(['SET SESSION max_execution_time = 6000', 'START TRANSACTION READ ONLY', 'SELECT x', 'ROLLBACK']);
   });
 });

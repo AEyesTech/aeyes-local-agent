@@ -30,6 +30,8 @@ export interface DbDriver {
 export type DbDrivers = Record<DatabaseKind, DbDriver>;
 
 export const DB_CONNECT_TIMEOUT_MS = 10_000;
+/** MySQL 서버 max_execution_time 을 클라이언트 timeout 보다 이만큼 늦게 건다(클라이언트가 먼저 오류를 내게). */
+export const MYSQL_SERVER_TIMEOUT_GRACE_MS = 1_000;
 
 const importModule = (specifier: string): Promise<unknown> => import(specifier);
 
@@ -211,7 +213,9 @@ export function createMysqlDriver(
       let destroyed = false;
       try {
         // MySQL 전용 설정(SELECT 에만 적용). MariaDB 등 없는 서버면 무시하고 클라이언트 timeout 에 맡긴다.
-        await guard(runStatement(conn, `SET SESSION max_execution_time = ${Math.floor(opts.timeoutMs)}`, opts.timeoutMs)).catch(() => undefined);
+        // 서버 제한에 먼저 끊기면 SLEEP 등이 오류 없이 끝나 잘린 결과가 성공처럼 돌아올 수 있다.
+        // 클라이언트 timeout 이 항상 먼저 오류를 내도록 서버 제한은 여유를 두고 뒤에 거는 안전망으로만 쓴다.
+        await guard(runStatement(conn, `SET SESSION max_execution_time = ${Math.floor(opts.timeoutMs) + MYSQL_SERVER_TIMEOUT_GRACE_MS}`, opts.timeoutMs)).catch(() => undefined);
         await guard(runStatement(conn, opts.readOnly ? 'START TRANSACTION READ ONLY' : 'START TRANSACTION', opts.timeoutMs));
         const result = await guard(new Promise<DbRawResult>((resolve, reject) => {
           const columns: string[] = [];
