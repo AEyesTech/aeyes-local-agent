@@ -15,7 +15,7 @@ describe('version', () => {
     expect(pkg.scripts.prepublishOnly).toBe('pnpm build');
     expect(pkg.license).toBe('MIT');
     expect(pkg.name).toBe('aeyes-local-agent');
-    expect(pkg.repository).toBeUndefined();
+    expect(pkg.repository.url).toBe('git+https://github.com/AEyesTech/aeyes-local-agent.git');
   });
 });
 
