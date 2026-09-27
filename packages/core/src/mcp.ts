@@ -5,6 +5,7 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { AGENT_VERSION } from './version.js';
+import { ToolError } from './errors.js';
 import type { AuditLog } from './audit.js';
 import { summarizeArgs } from './audit.js';
 import { grantKey, InputBlockedError, sessionGrantKey, type ConfirmationGate } from './policy/gate.js';
@@ -61,6 +62,10 @@ export function createMcpServer(
           if (error instanceof InputBlockedError) {
             result = errorResult('busy', error.message);
             outcome = 'denied';
+          } else if (error instanceof ToolError) {
+            // 입력 잠금 시간 초과 등 예상된 실패.
+            result = errorResult(error.code, error.message);
+            outcome = 'error';
           } else {
             // 확인 게이트(설정 저장 등)나 도구에서 예상 밖 예외가 나도 실행된 것으로 보지 않고, 감사 로그는 반드시 남긴다.
             result = errorResult('failed', '도구 실행 중 오류가 났습니다');

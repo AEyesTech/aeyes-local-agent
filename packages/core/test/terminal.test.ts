@@ -148,7 +148,7 @@ describe('TerminalIO', () => {
     expect(printed()).not.toContain('터미널 입력이 닫혀');
   });
 
-  it('세션 허용 가능하면 [s] 를 보여 주고 s 는 session, 불가하면 s 는 이번만 허용', async () => {
+  it('세션 허용 가능하면 [s] 를 보여 주고 s 는 session, 불가하면 [s] 가 없고 s 는 거부', async () => {
     const { input, term, printed } = io();
     const p = term.confirm(
       { tool: 'mouse_click', summary: '클릭', origin: 'o', accountLabel: 'a', alwaysAllowed: false, sessionAllowed: true },
@@ -158,10 +158,12 @@ describe('TerminalIO', () => {
     expect(printed()).toContain('[s] 이 세션 동안 허용(마우스·키보드, 60분)');
     input.write('s\n');
     expect(await p).toBe('session');
+    const before = printed().length;
     const q = term.confirm({ tool: 'shell_exec', summary: 'ls', origin: 'o', accountLabel: 'a' }, new AbortController().signal);
     await tick();
+    expect(printed().slice(before)).not.toContain('[s]');
     input.write('s\n');
-    expect(await q).toBe('allow');
+    expect(await q).toBe('deny');
     term.close();
   });
 });

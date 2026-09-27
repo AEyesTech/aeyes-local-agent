@@ -7,11 +7,14 @@
  * 입력 동작 중에 온 확인은 입력이 끝난 뒤에 띄운다.
  */
 import type { ConfigStore } from '../config.js';
+import { ToolError } from '../errors.js';
 import type { ConfirmDecision, Confirmer, ConfirmRequest } from './confirmer.js';
 
 export const CONFIRM_TIMEOUT_MS = 120_000;
 /** "이 세션 동안 허용"이 유지되는 최대 시간. 에이전트를 다시 시작하면 그 전에도 사라진다. */
 export const SESSION_GRANT_TTL_MS = 60 * 60_000;
+/** 입력 동작 하나가 잠금을 쥘 수 있는 최대 시간. 드라이버가 멈춰도 이후 확인·입력이 영영 막히지 않게 한다. */
+export const INPUT_LOCK_TIMEOUT_MS = 30_000;
 /** 마우스·키보드 입력 도구. "항상 허용"은 없고 "이 세션 동안 허용"만 있다. */
 export const INPUT_TOOLS: ReadonlySet<string> = new Set(['mouse_move', 'mouse_click', 'keyboard_type', 'keyboard_press']);
 
@@ -100,7 +103,8 @@ export class ConfirmationGate {
     private readonly store: ConfigStore,
     private readonly confirmer: Confirmer,
     private readonly timeoutMs: number = CONFIRM_TIMEOUT_MS,
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    private readonly inputLockTimeoutMs: number = INPUT_LOCK_TIMEOUT_MS
   ) {}
 
   /** key 가 null 이면 "항상 허용" 불가: 기록을 보지 않고, 'always' 답도 이번만 허용으로 처리한다. */
@@ -139,7 +143,8 @@ export class ConfirmationGate {
 
   /**
    * 입력 도구 실행을 감싼다. 확인 대기 중이면 InputBlockedError, 실행 중에는 새 확인 표시를 미룬다.
-   * 입력 동작끼리는 순서대로 실행한다.
+   * 입력 동작끼리는 순서대로 실행한다. fn 이 inputLockTimeoutMs 안에 끝나지 않으면 잠금을 풀고
+   * ToolError('timeout') 으로 실패한다(멈춘 드라이버 호출은 결과를 버린다).
    */
   async withInputLock<T>(fn: () => Promise<T>): Promise<T> {
     if (this.pending > 0) throw new InputBlockedError();
@@ -150,7 +155,18 @@ export class ConfirmationGate {
     try {
       await previous;
       if (this.pending > 0) throw new InputBlockedError();
-      return await fn();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new ToolError('timeout', `마우스·키보드 동작이 ${Math.round(this.inputLockTimeoutMs / 1000)}초 안에 끝나지 않아 중단했습니다`)),
+          this.inputLockTimeoutMs
+        );
+      });
+      try {
+        return await Promise.race([fn(), timeout]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     } finally {
       release();
     }

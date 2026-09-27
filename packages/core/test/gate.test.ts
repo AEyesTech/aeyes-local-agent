@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { ConfigStore } from '../src/config.js';
-import { CONFIRM_TIMEOUT_MS, ConfirmationGate, grantKey, InputBlockedError, SESSION_GRANT_TTL_MS, sessionGrantKey } from '../src/policy/gate.js';
+import { CONFIRM_TIMEOUT_MS, ConfirmationGate, grantKey, INPUT_LOCK_TIMEOUT_MS, InputBlockedError, SESSION_GRANT_TTL_MS, sessionGrantKey } from '../src/policy/gate.js';
+import { ToolError } from '../src/errors.js';
 import type { ConfirmDecision, Confirmer } from '../src/policy/confirmer.js';
 
 async function store() {
@@ -225,6 +226,34 @@ describe('세션 허용·입력 잠금', () => {
     const fast = gate.withInputLock(async () => { order.push('b'); });
     await Promise.all([slow, fast]);
     expect(order).toEqual(['a', 'b']);
+  });
+});
+
+describe('입력 잠금 시간 제한', () => {
+  it('기본 입력 잠금 제한은 30초', () => {
+    expect(INPUT_LOCK_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it('끝나지 않는 입력 동작은 제한 시간 뒤 timeout 으로 실패하고, 이후 확인은 정상적으로 묻는다', async () => {
+    const s = await store();
+    const asked: string[] = [];
+    const gate = new ConfirmationGate(s, { confirm: async (req) => { asked.push(req.tool); return 'allow'; } }, CONFIRM_TIMEOUT_MS, Date.now, 30);
+    const hung = gate.withInputLock(() => new Promise<never>(() => undefined));
+    await new Promise((r) => setTimeout(r, 0));
+    const check = gate.check({ tool: 'shell_exec', summary: 'ls', origin: 'o', accountLabel: 'a', key: 'k' });
+    const error = await hung.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ToolError);
+    expect((error as ToolError).code).toBe('timeout');
+    expect(await check).toBe(true);
+    expect(asked).toEqual(['shell_exec']);
+    await expect(gate.withInputLock(async () => 'next')).resolves.toBe('next');
+  });
+
+  it('입력 동작이 예외를 던져도 잠금이 풀린다', async () => {
+    const s = await store();
+    const gate = new ConfirmationGate(s, denyAll(), CONFIRM_TIMEOUT_MS, Date.now, 1_000);
+    await expect(gate.withInputLock(async () => { throw new Error('driver failed'); })).rejects.toThrow('driver failed');
+    await expect(gate.withInputLock(async () => 'ok')).resolves.toBe('ok');
   });
 });
 

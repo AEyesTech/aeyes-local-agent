@@ -98,4 +98,21 @@ describe('createMcpServer 입력 도구', () => {
     await a.close();
     await b.close();
   });
+
+  it('끝나지 않는 입력 도구는 timeout 오류로 끝나고 감사 로그를 남긴다', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'aeyes-mcp-'));
+    const store = await ConfigStore.open(path.join(dir, '.a'), dir);
+    const gate = new ConfirmationGate(store, { confirm: async () => 'allow' }, 120_000, Date.now, 30);
+    const hung = defineTool({
+      name: 'mouse_click', description: 'x', inputSchema: {}, readOnly: false, confirm: 'always',
+      summarize: () => 'x', handler: () => new Promise<never>(() => undefined),
+    });
+    const client = await connect([hung], gate, 'p1', dir);
+    const result = await client.callTool({ name: 'mouse_click', arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse((result.content as Array<{ text: string }>)[0].text).error).toBe('timeout');
+    const lines = (await readFile(path.join(dir, 'audit.log'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines.map((l) => `${l.tool}:${l.result}`)).toEqual(['mouse_click:error']);
+    await client.close();
+  });
 });

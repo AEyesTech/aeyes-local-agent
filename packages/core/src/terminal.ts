@@ -136,13 +136,14 @@ export class TerminalIO implements Confirmer {
   private onLine(line: string): void {
     if (this.active) {
       const answer = line.toLowerCase();
-      // "항상 허용"·"세션 허용"은 요청이 허용 가능하다고 표시한 경우에만 받는다. 아니면 이번만 허용.
+      // "항상 허용"은 요청이 허용 가능하다고 표시한 경우에만 받는다(아니면 a 는 이번만 허용).
+      // "세션 허용"은 제시하지 않은 요청에서 s 를 누르면 보수적으로 거부한다.
       const canAlways = this.active.req.alwaysAllowed === true && !!this.active.req.grantKey;
       const canSession = this.active.req.sessionAllowed === true;
       const decision: ConfirmDecision =
         answer === 'y' ? 'allow'
           : answer === 'a' ? (canAlways ? 'always' : 'allow')
-            : answer === 's' ? (canSession ? 'session' : 'allow')
+            : answer === 's' ? (canSession ? 'session' : 'deny')
               : 'deny';
       this.finish(this.active, decision, decision === 'deny' ? '거부했습니다.\n' : '허용했습니다.\n');
       return;
