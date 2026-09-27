@@ -1,0 +1,31 @@
+{
+  "name": "aeyes-agent-desktop",
+  "productName": "AeyeStudio Agent",
+  "version": "0.2.0",
+  "private": true,
+  "description": "AeyeStudio 내 PC 연결 트레이 앱",
+  "author": "AEyesTech",
+  "license": "MIT",
+  "homepage": "https://github.com/AEyesTech/aeyes-local-agent#readme",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "pnpm build && electron .",
+    "dist": "pnpm build && electron-builder --config electron-builder.config.cjs --publish never",
+    "dist:dir": "pnpm build && electron-builder --config electron-builder.config.cjs --dir --publish never"
+  },
+  "dependencies": {
+    "aeyes-local-agent": "workspace:*",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.0",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.0"
+  }
+}
