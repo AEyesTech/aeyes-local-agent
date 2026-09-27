@@ -14,3 +14,7 @@ export type { ToolDef } from './tools/types.js';
 export { unsafeAllowedDirReason } from './paths.js';
 export { PID_FILE, isPidAlive, readRunningPid, writePidFile, removePidFile } from './pidFile.js';
 export { MAX_QUEUED_CONFIRMATIONS, SUMMARY_DISPLAY_MAX, sanitizeForTerminal, truncateSummaryForDisplay } from './terminal.js';
+export { loadNativeDrivers, NO_NATIVE, KEY_NAMES, type NativeDrivers, type ScreenDriver, type InputDriver } from './native.js';
+export { DATABASE_NAME_PATTERN, type DatabaseRecord, type DatabaseKind } from './config.js';
+export { classifySql } from './db/sqlGuard.js';
+export { createDefaultDbDrivers, type DbDriver } from './db/drivers.js';

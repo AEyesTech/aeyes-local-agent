@@ -1,6 +1,7 @@
 /**
  * 127.0.0.1 전용 HTTP 서버. 요청마다 Host → Origin → CORS → 라우팅 순서로 처리한다.
  * /mcp 는 무상태 Streamable HTTP(요청마다 새 McpServer + transport).
+ * 화면·입력 드라이버(선택 의존성)는 시작을 막지 않도록 백그라운드로 불러오고, 첫 /mcp 요청이 기다린다.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { AuditLog } from './audit.js';
 import { PORT_RANGE_END, type ConfigStore, type PairingRecord } from './config.js';
 import { createMcpServer } from './mcp.js';
+import { loadNativeDrivers, type NativeDrivers } from './native.js';
 import type { Confirmer } from './policy/confirmer.js';
 import { ConfirmationGate } from './policy/gate.js';
 import { isAllowedHost, isAllowedOrigin } from './security/origin.js';
@@ -22,6 +24,8 @@ export interface AgentOptions {
   confirmer: Confirmer;
   dev?: boolean;
   tools?: ToolDef[];
+  /** 화면·입력 드라이버(테스트·데스크톱 주입용). 없으면 선택 의존성을 불러온다. tools 를 주면 무시된다. */
+  native?: NativeDrivers;
   auditFile?: string;
   confirmTimeoutMs?: number;
   /** 페어링 성공 알림(데스크톱 앱 알림용). 예외를 던져도 페어링은 성공한다. */
@@ -34,6 +38,8 @@ export interface RunningAgent {
   /** "이 세션 동안 허용"을 모두 취소하고 취소한 수를 돌려준다. */
   clearSessionGrants(): number;
   sessionGrantCount(): number;
+  /** 실제 등록된 도구 이름(네이티브 로드가 끝난 뒤). */
+  toolNames(): Promise<string[]>;
   close(): Promise<void>;
 }
 
@@ -90,7 +96,13 @@ function listen(server: Server, start: number): Promise<number> {
 export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
   const { store } = opts;
   const dev = opts.dev === true;
-  const tools = opts.tools ?? buildDefaultTools();
+  const databases = () => store.get().databases;
+  const toolsReady: Promise<ToolDef[]> = opts.tools
+    ? Promise.resolve(opts.tools)
+    : (opts.native ? Promise.resolve(opts.native) : loadNativeDrivers()).then(
+        (native) => buildDefaultTools({ native, databases }),
+        () => buildDefaultTools({ databases })
+      );
   const pairing = new PairingManager(store);
   const gate = new ConfirmationGate(store, opts.confirmer, opts.confirmTimeoutMs);
   const audit = new AuditLog(opts.auditFile ?? path.join(store.dir, 'audit.log'));
@@ -171,6 +183,7 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
       // JSON-RPC 배치는 받지 않는다 — 요청 한 번으로 도구 호출·확인 창을 대량으로 띄우는 것을 막는다(속도 제한 우회 방지).
       if (Array.isArray(parsed)) return sendJson(res, 400, { error: 'batch_not_supported' });
       void pairing.touch(record.id).catch(() => undefined);
+      const tools = await toolsReady;
       const mcp = createMcpServer(tools, {
         allowedDirs: store.get().allowedDirs,
         deniedDirs: [store.dir],
@@ -205,6 +218,7 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
     pairing,
     clearSessionGrants: () => gate.clearSessionGrants(),
     sessionGrantCount: () => gate.sessionGrantCount(),
+    toolNames: async () => (await toolsReady).map((t) => t.name),
     close: () => new Promise<void>((resolve) => {
       server.closeAllConnections?.();
       server.close(() => resolve());

@@ -78,7 +78,7 @@ describe('보안 검사', () => {
     const res = await fetch(`${base}/health`, { headers: { origin: ORIGIN } });
     expect(res.headers.get('access-control-allow-origin')).toBe(ORIGIN);
     expect(res.headers.get('vary')).toContain('Origin');
-    expect(await res.json()).toEqual({ name: 'aeyes-local-agent', version: '0.1.0', paired: false });
+    expect(await res.json()).toEqual({ name: 'aeyes-local-agent', version: '0.2.0', paired: false });
     await pair(base, a);
     expect((await (await fetch(`${base}/health`, { headers: { origin: ORIGIN } })).json()).paired).toBe(true);
   });

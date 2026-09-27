@@ -101,4 +101,25 @@ describe('buildDefaultTools', () => {
       'clipboard_read', 'fs_delete', 'fs_move', 'open_app', 'open_path', 'shell_exec',
     ]);
   });
+
+  it('네이티브 드라이버·DB 설정이 있으면 3단계 도구를 더하고, 없으면 뺀다', () => {
+    const screen = { listDisplays: async () => [], capture: async () => Buffer.alloc(0) };
+    const input = { moveMouse: async () => undefined, click: async () => undefined, typeText: async () => undefined, pressKeys: async () => undefined };
+    const driver = { execute: async () => ({ columns: [], rows: [], rowCount: 0, command: null, truncated: false }) };
+    const tools = buildDefaultTools({
+      native: { screen, input },
+      databases: () => [{ name: 'shop', kind: 'postgres', connectionString: 'postgres://u:p@h/db', readOnly: true }],
+      dbDrivers: { postgres: driver, mysql: driver },
+    });
+    const names = tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(['screenshot', 'mouse_move', 'mouse_click', 'keyboard_type', 'keyboard_press', 'db_query']));
+    expect(tools).toHaveLength(21);
+    expect(tools.find((t) => t.name === 'db_query')?.readOnly).toBe(true);
+    expect(tools.find((t) => t.name === 'db_query')?.confirm).toBe('conditional');
+    const bare = buildDefaultTools({ native: { screen: null, input: null }, databases: () => [] }).map((t) => t.name);
+    expect(bare).not.toContain('screenshot');
+    expect(bare).not.toContain('mouse_move');
+    expect(bare).not.toContain('db_query');
+    expect(bare).toHaveLength(15);
+  });
 });

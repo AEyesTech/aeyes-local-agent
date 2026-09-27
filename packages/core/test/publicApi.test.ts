@@ -7,6 +7,7 @@ describe('공개 API', () => {
       'startAgent', 'ConfigStore', 'defaultConfigDir', 'AGENT_VERSION', 'readRunningPid', 'writePidFile', 'removePidFile',
       'isPidAlive', 'PID_FILE', 'unsafeAllowedDirReason', 'sanitizeForTerminal', 'truncateSummaryForDisplay',
       'MAX_QUEUED_CONFIRMATIONS', 'CONFIRM_TIMEOUT_MS', 'SESSION_GRANT_TTL_MS', 'INPUT_TOOLS', 'sessionGrantKey',
+      'loadNativeDrivers', 'NO_NATIVE', 'KEY_NAMES', 'DATABASE_NAME_PATTERN', 'classifySql', 'createDefaultDbDrivers',
     ]) {
       expect(api, name).toHaveProperty(name);
     }

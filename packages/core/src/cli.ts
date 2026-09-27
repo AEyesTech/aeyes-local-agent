@@ -182,6 +182,14 @@ export async function main(
     `명령: ${COMMANDS}\n`
   );
   showCode();
+  void agent.toolNames().then((names) => {
+    if (!names.includes('screenshot') || !names.includes('mouse_move')) {
+      io.output.write('화면 캡처·마우스·키보드 도구는 이 PC 에서 쓸 수 없습니다(선택 구성요소를 불러오지 못함). 나머지 도구는 정상입니다.\n');
+    }
+    if (names.includes('db_query')) {
+      io.output.write(`DB 조회(db_query): ${store.get().databases.map((d) => d.name).join(', ')}\n`);
+    }
+  }, () => undefined);
 
   return new Promise<number>((resolve) => {
     const shutdown = async () => {

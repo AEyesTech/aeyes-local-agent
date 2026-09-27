@@ -46,7 +46,7 @@ describe('main', () => {
   it('--version', async () => {
     const s = streams();
     expect(await main(['--version'], s)).toBe(0);
-    expect(s.out().trim()).toBe('0.1.0');
+    expect(s.out().trim()).toBe('0.2.0');
   });
 
   it('unpair --all 은 설정의 페어링을 비운다', async () => {

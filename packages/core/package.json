@@ -1,6 +1,6 @@
 {
   "name": "aeyes-local-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AeyeStudio 내 PC 연결용 로컬 MCP 에이전트",
   "license": "MIT",
   "type": "module",
