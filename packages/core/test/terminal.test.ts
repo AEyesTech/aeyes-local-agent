@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
-import { sanitizeForTerminal, TerminalIO } from '../src/terminal.js';
+import { sanitizeForTerminal, truncateSummaryForDisplay, TerminalIO } from '../src/terminal.js';
 
 function io() {
   const input = new PassThrough();
@@ -187,5 +187,40 @@ describe('TerminalIO 표시 정화', () => {
     input.write('n\n');
     expect(await p).toBe('deny');
     term.close();
+  });
+
+  it('긴 명령의 꼬리를 가리지 않는다: 위험한 뒷부분이 잘려 사라지지 않고 그대로 보인다', async () => {
+    const { input, term, printed } = io();
+    const command = 'a'.repeat(1990) + '; rm -rf ~'; // 총 2000자
+    expect(command).toHaveLength(2000);
+    const p = term.confirm({
+      tool: 'shell_exec',
+      summary: command,
+      origin: 'https://studio.aeyes.dev',
+      accountLabel: 'me',
+    }, new AbortController().signal);
+    await tick();
+    const shown = printed();
+    expect(shown).toContain('rm -rf ~');
+    expect(shown).toContain('(총 2000자)');
+    input.write('n\n');
+    expect(await p).toBe('deny');
+    term.close();
+  });
+});
+
+describe('truncateSummaryForDisplay', () => {
+  it('짧은 요약은 그대로 둔다', () => {
+    expect(truncateSummaryForDisplay('ls', 500)).toBe('ls');
+    expect(truncateSummaryForDisplay('x'.repeat(500), 500)).toBe('x'.repeat(500));
+  });
+
+  it('max 를 넘으면 앞 250자 + … + 뒤 250자 + 총 길이를 보여 주고 꼬리를 가리지 않는다', () => {
+    const command = 'a'.repeat(1990) + '; rm -rf ~';
+    const out = truncateSummaryForDisplay(command, 500);
+    expect(out).toContain('rm -rf ~');
+    expect(out.startsWith('a'.repeat(250))).toBe(true);
+    expect(out.endsWith('(총 2000자)')).toBe(true);
+    expect(out).toContain(' … ');
   });
 });

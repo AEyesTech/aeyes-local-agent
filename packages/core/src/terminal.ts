@@ -29,6 +29,20 @@ export function sanitizeForTerminal(text: string, max?: number): string {
   return chars.length > max ? `${chars.slice(0, max).join('')}…` : escaped;
 }
 
+/**
+ * 확인 프롬프트의 요약(summary)은 마지막 방어선이라 앞부분만 보여 주면 위험한 꼬리(`; rm -rf ~` 등)를
+ * 가릴 수 있다. `max` 를 넘으면 앞뒤를 절반씩 보여 주고 잘렸다는 사실과 전체 길이를 함께 표시한다.
+ * 입력은 이미 sanitizeForTerminal 로 이스케이프된 문자열이어야 한다(이스케이프가 잘리지 않도록).
+ */
+export function truncateSummaryForDisplay(escaped: string, max: number): string {
+  const chars = Array.from(escaped);
+  if (chars.length <= max) return escaped;
+  const half = Math.floor(max / 2);
+  const head = chars.slice(0, half).join('');
+  const tail = chars.slice(chars.length - half).join('');
+  return `${head} … ${tail} (총 ${chars.length}자)`;
+}
+
 interface Pending {
   req: ConfirmRequest;
   signal: AbortSignal;
@@ -110,7 +124,7 @@ export class TerminalIO implements Confirmer {
     const origin = sanitizeForTerminal(req.origin, LABEL_DISPLAY_MAX);
     this.output.write(
       `\n[확인 필요] ${account} (${origin})\n` +
-      `  ${sanitizeForTerminal(req.tool, LABEL_DISPLAY_MAX)}: ${sanitizeForTerminal(req.summary, SUMMARY_DISPLAY_MAX)}\n` +
+      `  ${sanitizeForTerminal(req.tool, LABEL_DISPLAY_MAX)}: ${truncateSummaryForDisplay(sanitizeForTerminal(req.summary), SUMMARY_DISPLAY_MAX)}\n` +
       `  [y] 허용${always}  [N] 거부 > `
     );
   }

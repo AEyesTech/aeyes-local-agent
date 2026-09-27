@@ -20,7 +20,12 @@ const CLOSE_GRACE_MS = 1000;
 const POWERSHELL_PREFIX = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8;';
 
 function encodePowerShell(command: string): string {
-  const script = `${POWERSHELL_PREFIX}\n${command}\nif ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }\n`;
+  // 명령 바로 다음 줄에서 성공 여부($?)와 종료 코드($LASTEXITCODE)를 먼저 붙잡아 둔다.
+  // 그러지 않으면 실패한 cmdlet(예: Get-Item nope) 뒤에도 이 판정문 자체가 성공해
+  // 프로세스 종료 코드가 0이 되어 버린다.
+  const script =
+    `${POWERSHELL_PREFIX}\n${command}\n$__ok = $?; $__code = $LASTEXITCODE\n` +
+    `if ($null -ne $__code -and $__code -ne 0) { exit $__code } elseif (-not $__ok) { exit 1 } else { exit 0 }\n`;
   return Buffer.from(script, 'utf16le').toString('base64');
 }
 

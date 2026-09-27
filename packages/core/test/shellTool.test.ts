@@ -33,8 +33,11 @@ describe('shellInvocation', () => {
     const script = Buffer.from(args[3], 'base64').toString('utf16le');
     expect(script.startsWith('[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8;')).toBe(true);
     expect(script).toContain('\ndir "한글 폴더"\n');
-    expect(script).toMatch(/exit \$LASTEXITCODE/);
-    expect(script.indexOf('dir "한글 폴더"')).toBeLessThan(script.indexOf('exit $LASTEXITCODE'));
+    // 명령 바로 다음 줄에서 $? (성공 여부) 를 붙잡아 둔다 — 실패한 cmdlet(예: Get-Item nope)이
+    // 그 뒤 판정문 때문에 종료 코드 0으로 덮이지 않도록.
+    expect(script).toContain('\ndir "한글 폴더"\n$__ok = $?; $__code = $LASTEXITCODE\n');
+    expect(script).toContain('if ($null -ne $__code -and $__code -ne 0) { exit $__code } elseif (-not $__ok) { exit 1 } else { exit 0 }');
+    expect(script.indexOf('dir "한글 폴더"')).toBeLessThan(script.indexOf('$__ok = $?'));
   });
 });
 
