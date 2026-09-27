@@ -106,4 +106,31 @@ describe('ConfigStore', () => {
     expect(cfg.pairings).toEqual([]);
     expect('extra' in cfg).toBe(false);
   });
+
+  it('databases: 잘못된 항목은 버리고 readOnly 기본은 true, 이름 중복은 처음 것만', async () => {
+    const home = await tempHome();
+    const dir = path.join(home, '.a');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'config.json'), JSON.stringify({
+      databases: [
+        { name: 'shop', kind: 'postgres', connectionString: 'postgres://u:p@h/db' },
+        { name: 'erp', kind: 'mysql', connectionString: 'mysql://u:p@h/db', readOnly: false },
+        { name: 'shop', kind: 'mysql', connectionString: 'mysql://x' },
+        { name: 'bad name!', kind: 'postgres', connectionString: 'postgres://h/db' },
+        { name: 'ora', kind: 'oracle', connectionString: 'x' },
+        { name: 'empty', kind: 'postgres' },
+        'nope',
+      ],
+    }));
+    const cfg = (await ConfigStore.open(dir, home)).get();
+    expect(cfg.databases).toEqual([
+      { name: 'shop', kind: 'postgres', connectionString: 'postgres://u:p@h/db', readOnly: true },
+      { name: 'erp', kind: 'mysql', connectionString: 'mysql://u:p@h/db', readOnly: false },
+    ]);
+  });
+
+  it('databases 가 없으면 빈 배열', async () => {
+    const home = await tempHome();
+    expect((await ConfigStore.open(path.join(home, '.a'), home)).get().databases).toEqual([]);
+  });
 });

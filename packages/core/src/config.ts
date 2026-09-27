@@ -21,11 +21,24 @@ export interface AlwaysAllowRecord {
   createdAt: string;
 }
 
+export type DatabaseKind = 'postgres' | 'mysql';
+
+/** db_query 대상. connectionString 은 이 설정 파일(0600)에만 있고 도구·로그·CLI 출력에 나오지 않는다. */
+export interface DatabaseRecord {
+  name: string;
+  kind: DatabaseKind;
+  connectionString: string;
+  readOnly: boolean;
+}
+
+export const DATABASE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
+
 export interface AgentConfig {
   port: number;
   allowedDirs: string[];
   pairings: PairingRecord[];
   alwaysAllow: AlwaysAllowRecord[];
+  databases: DatabaseRecord[];
 }
 
 export const DEFAULT_PORT = 47821;
@@ -111,7 +124,19 @@ function normalize(raw: unknown, home: string): AgentConfig {
         return key ? [{ key, createdAt: str(a.createdAt) ?? new Date(0).toISOString() }] : [];
       })
     : [];
-  return { port, allowedDirs: dirs.length > 0 ? dirs : [defaultAllowedDir(home)], pairings, alwaysAllow };
+  const seenDb = new Set<string>();
+  const databases = Array.isArray(r.databases)
+    ? r.databases.filter(isRecord).flatMap((d) => {
+        const name = str(d.name);
+        const kind: DatabaseKind | null = d.kind === 'postgres' || d.kind === 'mysql' ? d.kind : null;
+        const connectionString = str(d.connectionString);
+        if (!name || !DATABASE_NAME_PATTERN.test(name) || !kind || !connectionString || seenDb.has(name)) return [];
+        seenDb.add(name);
+        // readOnly 가 명시적으로 false 가 아니면 읽기 전용(안전한 기본값).
+        return [{ name, kind, connectionString, readOnly: d.readOnly !== false }];
+      })
+    : [];
+  return { port, allowedDirs: dirs.length > 0 ? dirs : [defaultAllowedDir(home)], pairings, alwaysAllow, databases };
 }
 
 export class ConfigStore {
