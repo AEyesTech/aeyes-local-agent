@@ -1,0 +1,124 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 태그와 패키지 버전 일치 확인
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CORE=$(node -p "require('./packages/core/package.json').version")
+          DESKTOP=$(node -p "require('./packages/desktop/package.json').version")
+          if [ "$TAG" != "$CORE" ] || [ "$TAG" != "$DESKTOP" ]; then
+            echo "태그 $TAG, core $CORE, desktop $DESKTOP 가 다릅니다"
+            exit 1
+          fi
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+      - name: 서명 인증서 확인(mac)
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          HAS_CERT: ${{ secrets.MAC_CSC_LINK }}
+        run: |
+          if [ -z "$HAS_CERT" ]; then echo "::warning::MAC_CSC_LINK 시크릿이 없어 ad-hoc 서명·미공증 빌드를 만듭니다(설치 경고, 자동 업데이트 불가)."; fi
+      - name: 서명 인증서 확인(Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        env:
+          HAS_CERT: ${{ secrets.WIN_CSC_LINK }}
+        run: |
+          if [ -z "$HAS_CERT" ]; then echo "::warning::WIN_CSC_LINK 시크릿이 없어 미서명 설치 파일을 만듭니다(SmartScreen 경고)."; fi
+      - name: 데스크톱 앱 빌드(mac)
+        if: matrix.platform == 'mac'
+        working-directory: packages/desktop
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm exec electron-builder --config electron-builder.config.cjs --mac --publish never
+      - name: 데스크톱 앱 빌드(Windows)
+        if: matrix.platform == 'win'
+        working-directory: packages/desktop
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: pnpm exec electron-builder --config electron-builder.config.cjs --win --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: |
+            packages/desktop/release/*.dmg
+            packages/desktop/release/*.zip
+            packages/desktop/release/*.exe
+            packages/desktop/release/*.blockmap
+            packages/desktop/release/latest*.yml
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+
+  npm:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: NPM_TOKEN 이 없으면 건너뜀
+        if: env.NPM_TOKEN == ''
+        run: echo "NPM_TOKEN 시크릿이 없어 npm 배포를 건너뜁니다."
+      - uses: actions/checkout@v4
+        if: env.NPM_TOKEN != ''
+      - uses: pnpm/action-setup@v4
+        if: env.NPM_TOKEN != ''
+      - uses: actions/setup-node@v4
+        if: env.NPM_TOKEN != ''
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+      - if: env.NPM_TOKEN != ''
+        run: pnpm install --frozen-lockfile
+      - if: env.NPM_TOKEN != ''
+        run: pnpm --filter aeyes-local-agent publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
