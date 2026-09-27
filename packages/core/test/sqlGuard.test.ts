@@ -188,3 +188,33 @@ describe('classifySql 부작용 함수·접두사 보강(리뷰 1차)', () => {
     expect(kind(sql, dialect)).toBe('read');
   });
 });
+
+describe('classifySql 리뷰 2차: 빠진 테스트와 접두사 호출 위치 한정', () => {
+  it.each([
+    "SELECT source_pos_wait('f',1)",
+    'SELECT pg_stop_backup()',
+    "SELECT pg_restore_relation_stats('t')",
+    "SELECT asynchronous_connection_failover_add_source('c','h',3306,'',50)",
+    'SELECT audit_log_rotate()',
+    'SELECT pg_catalog.pg_ls_waldir ( )',
+    'SELECT pg_catalog.pg_ls_waldir /* c */ ()',
+    'SELECT "pg_ls_waldir"()',
+  ].flatMap((sql) => [[sql, 'postgres'], [sql, 'mysql']]) as Array<[string, SqlDialect]>)('쓰기: %s (%s)', (sql, dialect) => {
+    expect(kind(sql, dialect)).toBe('write');
+  });
+
+  it.each([
+    ['SELECT * FROM audit_log_2024', 'postgres'],
+    ['SELECT * FROM audit_log_2024', 'mysql'],
+    ['SELECT keyring_backup.id FROM keyring_backup', 'postgres'],
+    ['SELECT keyring_backup.id FROM keyring_backup', 'mysql'],
+    ['SELECT brin_idx_stats FROM t', 'postgres'],
+    ['SELECT * FROM pg_ls_files_log WHERE x = 1', 'postgres'],
+  ] as Array<[string, SqlDialect]>)('읽기: %s (%s)', (sql, dialect) => {
+    expect(kind(sql, dialect)).toBe('read');
+  });
+
+  it('정확한 이름 목록은 호출 위치가 아니어도 쓰기(변경 없음)', () => {
+    expect(kind('SELECT pg_sleep FROM t')).toBe('write');
+  });
+});

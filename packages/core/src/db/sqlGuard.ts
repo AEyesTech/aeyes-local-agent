@@ -56,8 +56,16 @@ const IDENT_CHAR = /[A-Za-z0-9_$\u0080-\uffff]/;
 /** MySQL `--` 주석은 뒤에 ASCII 공백·제어 문자가 올 때만. NBSP 같은 유니코드 공백은 주석으로 보지 않는다(숨기는 쪽이 위험). */
 const MYSQL_DASH_COMMENT_FOLLOW = /[\x00-\x20]/;
 
-function isSideEffectFunction(word: string): boolean {
-  return SIDE_EFFECT_FUNCTIONS.has(word) || SIDE_EFFECT_PREFIXES.some((prefix) => word.startsWith(prefix));
+function hasSideEffectPrefix(word: string): boolean {
+  return SIDE_EFFECT_PREFIXES.some((prefix) => word.startsWith(prefix));
+}
+
+/**
+ * 부작용 함수인지. 정확한 이름 목록은 위치와 무관하게 잡고, 접두사는 함수 호출 위치(바로 뒤가 `(`)일 때만 잡는다 —
+ * audit_log_2024·keyring_backup 같은 흔한 테이블 이름을 쓰기로 오판하지 않기 위해서.
+ */
+function isSideEffectFunction(word: string, isCall: boolean): boolean {
+  return SIDE_EFFECT_FUNCTIONS.has(word) || (isCall && hasSideEffectPrefix(word));
 }
 
 /** 줄 주석의 끝(\n 또는 \r 중 먼저). PostgreSQL 은 \r 에서도 주석을 끝낸다 — 더 일찍 끝내는 쪽이 보수적이다. */
@@ -150,7 +158,8 @@ export function scrubSql(
       if (end === -1) return { ok: false, reason: UNTERMINATED };
       // 인용 식별자는 키워드가 아니지만 함수 이름일 수는 있다("nextval"('s')). 부작용 함수 이름이면 단어로 남긴다.
       const name = sql.slice(i + 1, end - 1).split(c + c).join(c).toLowerCase();
-      out += /^[a-z_][a-z0-9_$]*$/.test(name) && isSideEffectFunction(name) ? ` ${name} ` : ' _q_ ';
+      // 호출 위치 판정은 뒤에서 하므로 여기서는 접두사 후보도 이름으로 남긴다.
+      out += /^[a-z_][a-z0-9_$]*$/.test(name) && (SIDE_EFFECT_FUNCTIONS.has(name) || hasSideEffectPrefix(name)) ? ` ${name} ` : ' _q_ ';
       i = end;
       continue;
     }
@@ -180,7 +189,16 @@ export function classifySql(sql: string, dialect: SqlDialect): SqlClassification
     const scrubbed = scrubSql(statement, dialect, backslashEscapes);
     if (!scrubbed.ok) return scrubbed;
     if (scrubbed.text.includes(';')) return { ok: false, reason: '한 번에 한 문장만 실행할 수 있습니다' };
-    const words = scrubbed.text.toLowerCase().match(/[a-z_][a-z0-9_$]*/g) ?? [];
+    const lowered = scrubbed.text.toLowerCase();
+    const words: string[] = [];
+    const calls: boolean[] = [];
+    const callParen = /\s*\(/y;
+    for (const m of lowered.matchAll(/[a-z_][a-z0-9_$]*/g)) {
+      words.push(m[0]);
+      // 주석은 공백으로 바뀌었으므로 공백 뒤 `(` 면 호출이다(pg_catalog.pg_ls_waldir ( ) 포함).
+      callParen.lastIndex = m.index + m[0].length;
+      calls.push(callParen.test(lowered));
+    }
     const head = words[0];
     if (head === undefined) return { ok: false, reason: 'SQL 이 비어 있습니다' };
     if (!keyword) keyword = head;
@@ -190,7 +208,7 @@ export function classifySql(sql: string, dialect: SqlDialect): SqlClassification
     const nextValue = words.some((w, n) => w === 'next' && words[n + 1] === 'value' && words[n + 2] === 'for');
     // MySQL 사용자 변수 대입(@a := 1)은 세션 상태 변경이다. 문자열은 이미 지워졌다.
     const mysqlAssign = dialect === 'mysql' && scrubbed.text.includes(':=');
-    if (!READ_HEADS.has(head) || rowLock || nextValue || mysqlAssign || words.some((w) => WRITE_WORDS.has(w) || isSideEffectFunction(w))) {
+    if (!READ_HEADS.has(head) || rowLock || nextValue || mysqlAssign || words.some((w, n) => WRITE_WORDS.has(w) || isSideEffectFunction(w, calls[n] === true))) {
       kind = 'write';
     }
   }
