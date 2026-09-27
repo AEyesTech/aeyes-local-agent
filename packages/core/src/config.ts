@@ -120,7 +120,9 @@ export class ConfigStore {
   private constructor(readonly dir: string, private current: AgentConfig) {}
 
   static async open(dir: string, home: string = homedir()): Promise<ConfigStore> {
-    await mkdir(dir, { recursive: true });
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    // 설정 폴더에는 페어링 해시·DB 연결 문자열이 있다. 이미 있던 폴더도 본인만 읽게 좁힌다.
+    if (process.platform !== 'win32') await chmod(dir, 0o700).catch(() => undefined);
     const file = path.join(dir, CONFIG_FILE);
     let raw: unknown = {};
     try {

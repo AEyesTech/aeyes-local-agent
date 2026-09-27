@@ -5,12 +5,13 @@
  */
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
-import { readFile, realpath, unlink, writeFile } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { ConfigStore, defaultConfigDir, DEFAULT_PORT, PORT_RANGE_END } from './config.js';
 import { autoAllowConfirmer } from './policy/confirmer.js';
 import { unsafeAllowedDirReason } from './paths.js';
+import { readRunningPid, removePidFile, writePidFile } from './pidFile.js';
 import { startAgent as defaultStartAgent } from './server.js';
 import { sanitizeForTerminal, TerminalIO } from './terminal.js';
 import { AGENT_VERSION } from './version.js';
@@ -74,30 +75,6 @@ export function parseArgs(argv: string[]): CliArgs {
     }
   }
   return args;
-}
-
-const PID_FILE = 'agent.pid';
-
-/** pid 가 살아 있는 프로세스인지 확인한다. 권한 오류(EPERM)는 살아 있는 것으로 본다(다른 사용자 소유 등). */
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-/** 설정 폴더의 agent.pid 를 읽어 살아 있는 pid 면 반환하고, 없거나 죽은 pid(오래된 파일)면 null 을 반환한다. */
-async function readRunningPid(configDir: string): Promise<number | null> {
-  try {
-    const text = await readFile(path.join(configDir, PID_FILE), 'utf8');
-    const pid = Number(text.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    return isPidAlive(pid) ? pid : null;
-  } catch {
-    return null;
-  }
 }
 
 type Io = { input: NodeJS.ReadableStream; output: NodeJS.WritableStream; error: NodeJS.WritableStream };
@@ -192,8 +169,7 @@ export async function main(
     io.error.write(`${startErrorMessage(error)}\n`);
     return 1;
   }
-  const pidFile = path.join(store.dir, PID_FILE);
-  await writeFile(pidFile, String(process.pid), 'utf8');
+  await writePidFile(store.dir);
   const showCode = () => {
     const { code, expiresAt } = agent.pairing.createCode();
     io.output.write(`\n페어링 코드: ${code}  (${new Date(expiresAt).toLocaleTimeString()}까지, AeyeStudio 설정 > 내 PC 연결에 입력)\n`);
@@ -211,7 +187,7 @@ export async function main(
     const shutdown = async () => {
       terminal.close();
       await agent.close();
-      await unlink(pidFile).catch(() => undefined);
+      await removePidFile(store.dir).catch(() => undefined);
       resolve(0);
     };
     terminal.onCommand((line) => {

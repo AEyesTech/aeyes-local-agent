@@ -59,6 +59,14 @@ describe('ConfigStore', () => {
     expect((await stat(path.join(dir, 'config.json'))).mode & 0o777).toBe(0o600);
   });
 
+  it.skipIf(process.platform === 'win32')('설정 폴더 권한은 0700(연결 문자열 등 비밀 보관)', async () => {
+    const home = await tempHome();
+    const dir = path.join(home, '.aeyes-agent');
+    await mkdir(dir, { recursive: true, mode: 0o755 });
+    await ConfigStore.open(dir, home);
+    expect((await stat(dir)).mode & 0o777).toBe(0o700);
+  });
+
   it('update 는 저장하고 get 은 복사본을 준다', async () => {
     const home = await tempHome();
     const store = await ConfigStore.open(path.join(home, '.a'), home);

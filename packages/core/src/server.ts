@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import path from 'node:path';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuditLog } from './audit.js';
-import { PORT_RANGE_END, type ConfigStore } from './config.js';
+import { PORT_RANGE_END, type ConfigStore, type PairingRecord } from './config.js';
 import { createMcpServer } from './mcp.js';
 import type { Confirmer } from './policy/confirmer.js';
 import { ConfirmationGate } from './policy/gate.js';
@@ -24,6 +24,8 @@ export interface AgentOptions {
   tools?: ToolDef[];
   auditFile?: string;
   confirmTimeoutMs?: number;
+  /** 페어링 성공 알림(데스크톱 앱 알림용). 예외를 던져도 페어링은 성공한다. */
+  onPaired?: (record: PairingRecord) => void;
 }
 
 export interface RunningAgent {
@@ -132,7 +134,14 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
         accountLabel: String(body.accountLabel ?? ''),
         browserLabel: String(body.browserLabel ?? ''),
       });
-      if (result.ok) return sendJson(res, 200, { token: result.token });
+      if (result.ok) {
+        try {
+          opts.onPaired?.(result.record);
+        } catch {
+          // 알림 실패는 페어링 결과에 영향을 주지 않는다.
+        }
+        return sendJson(res, 200, { token: result.token });
+      }
       return sendJson(res, result.reason === 'locked' ? 423 : 401, { error: result.reason });
     }
 
