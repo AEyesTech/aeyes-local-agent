@@ -109,30 +109,34 @@ jobs:
   npm:
     needs: build
     runs-on: ubuntu-latest
+    # 태그만 밀어도 바로 배포되지 않게 보호 환경 뒤에 둔다. 저장소 설정 > Environments 에 npm-release 를 만들고
+    # Required reviewers 를 지정해야 한다(없으면 GitHub 가 환경을 보호 규칙 없이 자동 생성해 승인 없이 진행된다).
+    environment: npm-release
     permissions:
       contents: read
       id-token: write
     env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # 토큰 값이 아니라 "있는지"만 잡 전체에 노출한다. 토큰 자체는 배포 단계에만 준다.
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - name: NPM_TOKEN 이 없으면 건너뜀
-        if: env.NPM_TOKEN == ''
+        if: env.HAS_NPM_TOKEN != 'true'
         run: echo "NPM_TOKEN 시크릿이 없어 npm 배포를 건너뜁니다."
       - uses: actions/checkout@v4
-        if: env.NPM_TOKEN != ''
+        if: env.HAS_NPM_TOKEN == 'true'
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@v4
-        if: env.NPM_TOKEN != ''
+        if: env.HAS_NPM_TOKEN == 'true'
       - uses: actions/setup-node@v4
-        if: env.NPM_TOKEN != ''
+        if: env.HAS_NPM_TOKEN == 'true'
         with:
           node-version: 22
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
-      - if: env.NPM_TOKEN != ''
+      - if: env.HAS_NPM_TOKEN == 'true'
         run: pnpm install --frozen-lockfile
-      - if: env.NPM_TOKEN != ''
+      - if: env.HAS_NPM_TOKEN == 'true'
         run: pnpm --filter aeyes-local-agent publish --no-git-checks --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

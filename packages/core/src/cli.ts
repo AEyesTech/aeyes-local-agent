@@ -12,7 +12,7 @@ import { ConfigStore, defaultConfigDir, DEFAULT_PORT, PORT_RANGE_END, type Datab
 import { addDatabase, formatDatabaseList, removeDatabase } from './dbCli.js';
 import { autoAllowConfirmer } from './policy/confirmer.js';
 import { unsafeAllowedDirReason } from './paths.js';
-import { AgentAlreadyRunningError, readRunningPid, removePidFile, writePidFile } from './pidFile.js';
+import { AgentAlreadyRunningError, PID_FILE, readRunningPid, removePidFile, stalePidFileHint, writePidFile } from './pidFile.js';
 import { startAgent as defaultStartAgent } from './server.js';
 import { sanitizeForTerminal, TerminalIO } from './terminal.js';
 import { AGENT_VERSION } from './version.js';
@@ -185,7 +185,7 @@ export async function main(
   // 같은 설정 폴더로 두 번째 에이전트를 띄우지 않는다(설정·pid 파일 경합). 자기 pid 는 오래된 파일로 본다.
   const livePid = await readRunningPid(store.dir);
   if (livePid !== null && livePid !== process.pid) {
-    io.error.write(`이미 에이전트가 실행 중입니다(pid ${livePid}). 실행 중인 터미널을 사용하거나 먼저 종료하세요.\n`);
+    io.error.write(`이미 에이전트가 실행 중입니다(pid ${livePid}). 실행 중인 터미널을 사용하거나 먼저 종료하세요. ${stalePidFileHint(path.join(store.dir, PID_FILE))}\n`);
     return 1;
   }
 

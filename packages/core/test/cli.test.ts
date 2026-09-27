@@ -26,6 +26,18 @@ describe('parseArgs', () => {
   });
 });
 
+/** 조건이 참이 될 때까지 짧게 폴링한다(고정 대기는 부하가 크면 흔들린다). */
+async function waitFor(check: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`${timeoutMs}ms 안에 기다리던 출력이 없습니다: ${what}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+/** 시작 출력의 마지막 줄(페어링 코드)이 나올 때까지 기다린다. */
+const started = (s: { out: () => string }) => waitFor(() => /페어링 코드: \d{6}/.test(s.out()), '페어링 코드');
+
 function streams() {
   const output = new PassThrough();
   const error = new PassThrough();
@@ -67,7 +79,7 @@ describe('main', () => {
     await writeFile(path.join(dir, 'config.json'), JSON.stringify({ allowedDirs: [path.join(dir, 'allowed')] }));
     const s = streams();
     const running = main(['--config-dir', dir], s);
-    await new Promise((r) => setTimeout(r, 300));
+    await started(s);
     expect(s.out()).toMatch(/127\.0\.0\.1:478(2\d|30)/);
     expect(s.out()).toMatch(/\b\d{6}\b/);
     s.input.write('q\n');
@@ -108,7 +120,7 @@ describe('main', () => {
     await writeFile(path.join(dir, 'config.json'), JSON.stringify({ allowedDirs: [path.join(dir, 'allowed')] }));
     const s = streams();
     const running = main(['--config-dir', dir], s);
-    await new Promise((r) => setTimeout(r, 300));
+    await started(s);
     expect((await readFile(path.join(dir, 'agent.pid'), 'utf8')).trim()).toBe(String(process.pid));
     s.input.write('q\n');
     expect(await running).toBe(0);
@@ -125,6 +137,7 @@ describe('main', () => {
       const s = streams();
       expect(await main(['--config-dir', dir], s)).toBe(1);
       expect(s.err()).toContain(`이미 에이전트가 실행 중입니다(pid ${live.pid})`);
+      expect(s.err()).toContain(`${path.join(dir, 'agent.pid')} 파일을 지운 뒤`);
       expect((await readFile(path.join(dir, 'agent.pid'), 'utf8')).trim()).toBe(String(live.pid));
     } finally {
       live.kill();
@@ -139,18 +152,18 @@ describe('main', () => {
     }));
     const s = streams();
     const running = main(['--config-dir', dir], s);
-    await new Promise((r) => setTimeout(r, 300));
+    await started(s);
     expect(s.out()).toContain('g = 항상 허용 목록');
     s.input.write('g\n');
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => s.out().includes('shell_exec:git'), 'g 목록');
     expect(s.out()).toContain('shell_exec:git');
     expect(s.out()).toContain('open_path:url');
     s.input.write('r\n');
-    await new Promise((r) => setTimeout(r, 100));
+    await waitFor(() => s.out().includes('항상 허용 2개를 지웠습니다'), 'r 결과');
     expect(s.out()).toContain('항상 허용 2개를 지웠습니다');
     expect(JSON.parse(await readFile(path.join(dir, 'config.json'), 'utf8')).alwaysAllow).toEqual([]);
     s.input.write('g\n');
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => s.out().includes('항상 허용 없음'), '빈 g 목록');
     expect(s.out()).toContain('항상 허용 없음');
     s.input.write('q\n');
     expect(await running).toBe(0);
@@ -190,10 +203,10 @@ describe('main', () => {
     await writeFile(path.join(dir, 'config.json'), JSON.stringify({ allowedDirs: [path.join(dir, 'allowed')] }));
     const s = streams();
     const running = main(['--config-dir', dir], s);
-    await new Promise((r) => setTimeout(r, 300));
+    await started(s);
     await chmod(path.join(dir, 'config.json'), 0o400);
     s.input.write('u\n');
-    await new Promise((r) => setTimeout(r, 100));
+    await waitFor(() => s.err().includes('연결 해제에 실패했습니다'), 'u 실패 메시지');
     expect(s.err()).toContain('연결 해제에 실패했습니다');
     await chmod(path.join(dir, 'config.json'), 0o600);
     s.input.write('q\n');

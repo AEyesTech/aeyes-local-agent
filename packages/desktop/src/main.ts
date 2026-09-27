@@ -10,7 +10,7 @@ import electronUpdater from 'electron-updater';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AgentAlreadyRunningError, AGENT_VERSION, ConfigStore, defaultConfigDir, readRunningPid, removePidFile, startAgent, writePidFile,
+  AgentAlreadyRunningError, AGENT_VERSION, ConfigStore, defaultConfigDir, PID_FILE, readRunningPid, removePidFile, startAgent, writePidFile,
   type RunningAgent,
 } from 'aeyes-local-agent';
 import type { ConfirmView } from './confirmView.js';
@@ -153,7 +153,7 @@ async function boot(): Promise<void> {
   });
   if (!instance.ok) {
     if (instance.reason === 'agent_running') {
-      dialog.showErrorBox(TITLE, `이미 에이전트가 실행 중입니다(pid ${instance.pid}). 터미널의 npx 에이전트를 먼저 종료한 뒤 다시 실행하세요.`);
+      dialog.showErrorBox(TITLE, `이미 에이전트가 실행 중입니다(pid ${instance.pid}). 터미널의 npx 에이전트를 먼저 종료한 뒤 다시 실행하세요. 실제로 실행 중인 에이전트가 없다면 ${path.join(configDir, PID_FILE)} 파일을 지운 뒤 다시 실행하세요.`);
     }
     app.exit(0);
     return;

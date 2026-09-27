@@ -39,6 +39,8 @@ describe('pidFile', () => {
     expect(error).toBeInstanceOf(AgentAlreadyRunningError);
     expect((error as AgentAlreadyRunningError).pid).toBe(4242);
     expect((error as AgentAlreadyRunningError).code).toBe('EEXIST');
+    // 실행 중인 에이전트가 없으면 지워도 되는 pid 파일 경로를 알려 준다((e)).
+    expect((error as Error).message).toContain(`${path.join(d, PID_FILE)} 파일을 지운 뒤`);
     expect(await readFile(path.join(d, PID_FILE), 'utf8')).toBe('4242');
   });
 

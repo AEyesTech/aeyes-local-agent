@@ -1,11 +1,12 @@
 /**
  * 위험 동작 확인: "항상 허용" 기록이 있으면 통과, 없으면 Confirmer 에 묻는다(120초 무응답은 거부).
  * "항상 허용"은 범위를 명확히 좁힐 수 있는 요청(grantKey 가 null 이 아닌 경우)에만 적용된다 —
- * 셸 제어 문자·래퍼 명령·인자가 있는 앱 실행·파일 열기·마우스/키보드·DB 쓰기는 매번 묻는다.
+ * 셸 제어·글롭 문자·래퍼 명령·인자가 있는 앱 실행·파일 열기·마우스/키보드·DB 쓰기는 매번 묻는다.
  * 마우스·키보드는 "이 세션 동안 허용"(메모리 전용, 페어링별, 60분)만 있다.
  * 입력 도구가 확인 창·터미널 프롬프트를 스스로 누르지 못하도록 확인 대기 중에는 입력을 막고(withInputLock),
  * 입력 동작 중에 온 확인은 입력이 끝나고 INPUT_SETTLE_MS 가 더 지난 뒤에 띄운다(OS 입력 버퍼에 남은 키가 먼저 소진되게).
- * 시간 초과로 버려진 입력 호출이 아직 끝나지 않았으면(최대 INPUT_ABANDON_MAX_MS) 새 확인은 띄우지 않고 즉시 거부한다.
+ * 시간 초과로 버려진 입력 호출이 아직 끝나지 않았으면(최대 INPUT_ABANDON_MAX_MS) 새 확인은 띄우지 않고 즉시 거부하고,
+ * 끝나면 INPUT_SETTLE_MS 가 더 지난 뒤에 확인을 띄운다.
  */
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,13 @@ export const INPUT_TOOLS: ReadonlySet<string> = new Set(['mouse_move', 'mouse_cl
 
 /** 셸 제어·치환·리다이렉트·그룹 문자. 하나라도 있으면 첫 단어가 실제 실행 범위를 대표하지 못한다. */
 const SHELL_CONTROL = /[;&|`$()<>{}\n\r]/;
+/**
+ * 셸 글롭 문자(*, ?, [ ]). 글롭은 글자 비교를 우회해 설정 폴더를 가리킬 수 있다(예: cat ~/.aeyes-ag?nt/c*.json).
+ * 중괄호 확장({a,b})은 SHELL_CONTROL 에서 이미 막는다.
+ */
+const SHELL_GLOB = /[*?[\]]/;
+/** 셸이 지우는 인용·이스케이프 문자. 'aeyes''-agent', aeyes\-agent 처럼 이름을 쪼개 비교를 우회하지 못하게 지운 형태로도 본다. */
+const SHELL_QUOTING = /['"\\]/g;
 
 /**
  * 설정 폴더(페어링 해시·DB 연결 문자열)를 가리킬 수 있는 명령인지. 이런 명령은 "항상 허용"으로 기록하지 않고 매번 묻는다.
@@ -72,9 +80,10 @@ function normalizeHead(head: string): string {
 
 export function shellGrantKey(command: string, configDir?: string): string | null {
   const trimmed = command.trim();
-  if (!trimmed || SHELL_CONTROL.test(trimmed) || trimmed.includes('=')) return null;
+  if (!trimmed || SHELL_CONTROL.test(trimmed) || SHELL_GLOB.test(trimmed) || trimmed.includes('=')) return null;
   // 설정 폴더를 읽는 명령(예: cat ~/.aeyes-agent/config.json)은 항상 허용된 명령이라도 매번 묻는다.
-  if (referencesConfigDir(trimmed, configDir)) return null;
+  // 글자 비교일 뿐이라 재귀 읽기(grep -r … ~)처럼 경로를 적지 않는 명령은 잡지 못한다 — README "보안" 참고.
+  if (referencesConfigDir(trimmed, configDir) || referencesConfigDir(trimmed.replace(SHELL_QUOTING, ''), configDir)) return null;
   const head = trimmed.split(/\s+/)[0] ?? '';
   // 경로가 붙은 머리(./run.sh, /usr/bin/sudo, C:\x.exe)는 내용이 바뀔 수 있고 래퍼 검사를 우회하므로 허용하지 않는다.
   if (!/^[a-z0-9._+-]+$/i.test(head)) return null;
@@ -247,9 +256,14 @@ export class ConfirmationGate {
       } catch (error) {
         if (timedOut && work) {
           // 드라이버 호출은 아직 진행 중일 수 있다. 끝나거나 마감이 지날 때까지 새 확인을 거부한다.
+          // 끝난 뒤에도 일반 입력과 같이 INPUT_SETTLE_MS 를 더 기다린 뒤에 확인을 띄운다(OS 에 남은 입력 소진).
           const id = Symbol('abandoned-input');
           this.abandoned.set(id, this.now() + INPUT_ABANDON_MAX_MS);
-          const forget = () => { this.abandoned.delete(id); };
+          const forget = () => {
+            const settle = new Promise<void>((resolve) => { setTimeout(resolve, settleMs); });
+            this.settledTail = Promise.all([this.settledTail, settle]).then(() => undefined);
+            this.abandoned.delete(id);
+          };
           work.then(forget, forget);
         }
         throw error;

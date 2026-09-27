@@ -72,9 +72,10 @@ PC 확인 프롬프트에는 매번 새로 뽑은 **2자리 코드**(10~99)가 �
 
 "항상 허용"을 고르면 표시된 범위는 다시 묻지 않습니다. 범위는 좁게 잡습니다.
 
-- `shell_exec`: 명령 첫 단어 단위(예: `shell_exec:git`). 단 `` ; & | $ ` ( ) { } < > `` 문자나 줄바꿈이 들어간 명령, `=` 대입이 있는 명령,
+- `shell_exec`: 명령 첫 단어 단위(예: `shell_exec:git`). 단 `` ; & | $ ` ( ) { } < > `` 문자나 줄바꿈이 들어간 명령, 글롭 문자(`*` `?` `[ ]`)가 들어간 명령, `=` 대입이 있는 명령,
   경로로 시작하는 명령, `sudo`·`env`·`xargs`·`bash`·`powershell`·`node`·`python`·`open` 같은 래퍼·인터프리터 명령은 항상 허용할 수 없고 매번 묻습니다.
-  설정 폴더를 가리키는 명령(설정 폴더 경로·`~` 상대 경로·폴더 이름, `aeyes-agent`(대소문자 무시), `config.json` 이 들어간 명령)도 이미 항상 허용된 명령이라도 매번 묻습니다.
+  설정 폴더를 가리키는 명령(설정 폴더 경로·`~` 상대 경로·폴더 이름, `aeyes-agent`(대소문자 무시), `config.json` 이 들어간 명령 — 따옴표·`\` 로 쪼갠 이름 포함)도 이미 항상 허용된 명령이라도 매번 묻습니다.
+  이 검사는 명령 글자만 봅니다. 경로를 적지 않고 읽는 명령(아래 "보안" 참고)은 잡지 못합니다.
 - `open_path`: 웹 주소(http/https)만 `open_path:url` 로 항상 허용할 수 있습니다. 파일·폴더 열기는 매번 묻고, 실행 파일·실행기 형식(`.app`, `.exe`, `.bat`, `.sh`, `.command`, `.lnk` 등)은 열지 않습니다.
 - `open_app`: 인자 없이 실행할 때만 앱 이름 단위로 항상 허용할 수 있습니다.
 - 마우스·키보드와 `db_query` 쓰기는 항상 허용할 수 없습니다.
@@ -125,6 +126,7 @@ npx aeyes-local-agent db remove shop
 - 확인 프롬프트·확인 창은 원격에서 온 글의 제어 문자를 보이는 형태로 바꿔 표시합니다(요약 500자까지, 길면 앞뒤를 함께 표시).
 - 설정·감사 로그 위치: macOS/Linux `~/.aeyes-agent/`, Windows `%APPDATA%\aeyes-agent\`.
 - 모든 도구 호출은 설정 폴더의 `audit.log`에 남습니다(파일 내용·클립보드·입력한 글·DB 결과 제외, SQL 은 앞 120자).
+- **알려진 한계 — `shell_exec` 항상 허용과 설정 폴더**: 설정 폴더(페어링 해시·DB 연결 문자열)를 가리키는 명령을 걸러 내는 검사는 명령 글자를 비교할 뿐입니다. `grep -r password ~` 나 `find ~ -name …` 처럼 경로를 직접 적지 않고 홈 폴더를 재귀로 읽는 명령, 환경에 따라 달라지는 경로는 글자 비교로 잡을 수 없습니다. 그러니 `grep`·`cat`·`find` 같은 범용 읽기 명령은 항상 허용하지 말고, 범위가 좁고 결과를 예측할 수 있는 명령만 항상 허용하세요. 확인 창에서는 명령 전체를 읽고, 홈 폴더나 설정 폴더를 건드릴 수 있으면 거부하세요.
 - **알려진 한계 — `shell_exec` 항상 허용과 확인 창**: `shell_exec`를 특정 명령으로 "항상 허용" 해 두면, 그 명령으로 실행된 프로세스가 스스로 입력을 합성해(예: macOS `osascript`/System Events, Windows `SendInput`) 화면 위의 확인 창 버튼을 클릭할 수 있습니다. 확인 창 자체는 이런 종류의 공격까지 막지는 못합니다. 그러니 `shell_exec`는 항상 허용 범위를 최대한 좁은 명령으로만 잡으세요(예: 특정 조회 스크립트 하나) — 범용 셸이나 인터프리터를 항상 허용하지 마세요.
 
 ## 저장소 구조
@@ -158,8 +160,9 @@ aeyes-local-agent/
 ## 릴리스(관리자)
 
 1. `packages/core/package.json`, `packages/core/src/version.ts`, `packages/desktop/package.json` 버전을 같은 값으로 올리고 커밋.
-2. `git tag v<버전> && git push origin v<버전>` → `release` 워크플로가 macOS(dmg+zip, universal)·Windows(NSIS x64)를 빌드해 GitHub Release 를 **초안(draft)** 으로 만들고, `NPM_TOKEN` 시크릿이 있으면 core 를 npm 에 배포합니다(provenance 포함).
+2. `git tag v<버전> && git push origin v<버전>` → `release` 워크플로가 macOS(dmg+zip, universal)·Windows(NSIS x64)를 빌드해 GitHub Release 를 **초안(draft)** 으로 만들고, `NPM_TOKEN` 시크릿이 있으면 `npm-release` 환경 승인 뒤 core 를 npm 에 배포합니다(provenance 포함).
 3. 관리자가 GitHub Releases 에서 초안의 파일·노트를 확인한 뒤 **직접 게시(Publish release)** 합니다. 게시하기 전에는 다운로드 링크와 데스크톱 앱 자동 업데이트에 나타나지 않습니다.
+   npm 배포 잡은 `npm-release` 환경 뒤에 있어 승인 전에는 배포되지 않습니다. **저장소 Settings > Environments 에서 `npm-release` 환경을 만들고 Required reviewers(관리자)를 지정해야 합니다** — 환경을 만들지 않으면 GitHub 가 보호 규칙 없이 자동으로 만들어 태그만 밀어도 바로 배포됩니다. `NPM_TOKEN` 은 이 환경의 시크릿(또는 저장소 시크릿)으로 두고, 토큰은 배포 단계에만 전달됩니다.
    워크플로 권한은 기본 읽기 전용이고, Release 를 만드는 잡만 `contents: write` 를 받습니다. 체크아웃은 자격 증명을 남기지 않고(`persist-credentials: false`), `softprops/action-gh-release` 는 커밋 SHA 로 고정되어 있습니다.
 4. 서명 시크릿(없으면 미서명 빌드 + 경고): `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`(Developer ID 인증서 p12 base64·암호), `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`(공증), `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`(Windows 코드 서명).
 5. 데스크톱 앱은 electron-updater 로 GitHub Releases 의 (게시된) 새 버전을 6시간마다 확인합니다.

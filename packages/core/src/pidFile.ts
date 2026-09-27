@@ -33,13 +33,18 @@ export async function readRunningPid(configDir: string, alive: (pid: number) => 
   }
 }
 
+/** "이미 실행 중" 안내 뒤에 붙이는 문장: 실제로 실행 중인 에이전트가 없으면 pid 파일을 지워도 된다. */
+export function stalePidFileHint(file: string): string {
+  return `실제로 실행 중인 에이전트가 없다면 ${file} 파일을 지운 뒤 다시 실행하세요.`;
+}
+
 /** agent.pid 를 다른 살아 있는 에이전트가 쥐고 있다. */
 export class AgentAlreadyRunningError extends Error {
   readonly code = 'EEXIST';
-  constructor(readonly pid: number | null) {
-    super(pid !== null
+  constructor(readonly pid: number | null, readonly file?: string) {
+    super(`${pid !== null
       ? `이미 에이전트가 실행 중입니다(pid ${pid}). 실행 중인 에이전트를 사용하거나 먼저 종료하세요.`
-      : '이미 에이전트가 실행 중입니다. 실행 중인 에이전트를 사용하거나 먼저 종료하세요.');
+      : '이미 에이전트가 실행 중입니다. 실행 중인 에이전트를 사용하거나 먼저 종료하세요.'}${file ? ` ${stalePidFileHint(file)}` : ''}`);
     this.name = 'AgentAlreadyRunningError';
   }
 }
@@ -69,11 +74,11 @@ export async function writePidFile(
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       const existing = await readPid(file);
       if (existing === pid) return;
-      if ((existing !== null && alive(existing)) || attempt > 0) throw new AgentAlreadyRunningError(existing);
+      if ((existing !== null && alive(existing)) || attempt > 0) throw new AgentAlreadyRunningError(existing, file);
       if (existing === null) {
         // 다른 인스턴스가 방금 'wx' 로 만들고 아직 pid 를 쓰지 않았을 수 있다 — 최근 파일이면 실행 중으로 본다.
         const mtime = await stat(file).then((st) => st.mtimeMs).catch(() => 0);
-        if (Date.now() - mtime < FRESH_PID_FILE_MS) throw new AgentAlreadyRunningError(null);
+        if (Date.now() - mtime < FRESH_PID_FILE_MS) throw new AgentAlreadyRunningError(null, file);
       }
       // 오래된(죽은 pid·깨진) 파일 — 지우고 다시 배타적으로 만든다.
       await unlink(file).catch((e: NodeJS.ErrnoException) => { if (e.code !== 'ENOENT') throw e; });

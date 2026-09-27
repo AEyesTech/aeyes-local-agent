@@ -338,7 +338,30 @@ describe('입력 뒤 확인 유예(C1)·버려진 입력 호출(I1) — 가짜 �
     finishDriver();
     await vi.advanceTimersByTimeAsync(0);
     expect(gate.hasAbandonedInput()).toBe(false);
-    expect(await gate.check({ ...base, key: 'k' })).toBe(true);
+    const check = gate.check({ ...base, key: 'k' });
+    await vi.advanceTimersByTimeAsync(INPUT_SETTLE_MS);
+    expect(await check).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('버려진 입력 호출이 끝난 뒤에도 INPUT_SETTLE_MS 가 지나야 확인을 띄운다', async () => {
+    const s = await store();
+    vi.useFakeTimers();
+    const confirm = vi.fn(async () => 'allow' as const);
+    const gate = new ConfirmationGate(s, { confirm }, CONFIRM_TIMEOUT_MS, Date.now, 1_000);
+    let finishDriver: () => void = () => undefined;
+    const outcome = gate.withInputLock(() => new Promise<void>((resolve) => { finishDriver = resolve; })).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await outcome).toBeInstanceOf(ToolError);
+    // 잠금이 풀린 뒤의 일반 유예는 이미 지났다.
+    await vi.advanceTimersByTimeAsync(INPUT_SETTLE_MS * 3);
+    finishDriver();
+    await vi.advanceTimersByTimeAsync(0);
+    const check = gate.check({ ...base, key: 'k' });
+    await vi.advanceTimersByTimeAsync(INPUT_SETTLE_MS - 1);
+    expect(confirm).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await check).toBe(true);
     expect(confirm).toHaveBeenCalledTimes(1);
   });
 
@@ -401,6 +424,24 @@ describe('설정 폴더를 가리키는 shell_exec 는 항상 허용 불가(I2)'
     expect(referencesConfigDir('cat ~/work/agentcfg/x', custom, home)).toBe(true);
     expect(referencesConfigDir('cd agentcfg', custom, home)).toBe(true);
     expect(referencesConfigDir('ls ~/work', custom, home)).toBe(false);
+  });
+
+  it('글롭 문자가 있으면 설정 폴더를 가리키는지 알 수 없어 null(N1)', () => {
+    for (const command of [
+      'cat ~/.aeyes-ag?nt/c*.json', 'head -c 40 ~/.aeyes-*/co*', 'cat ~/.aeyes-[a]gent/config.json', 'ls *', 'cat a?.txt',
+    ]) {
+      expect(grantKey('shell_exec', { command }, cfg), command).toBeNull();
+      expect(grantKey('shell_exec', { command }), command).toBeNull();
+    }
+  });
+
+  it('인용·이스케이프로 이름을 쪼개도 null', () => {
+    for (const command of [
+      "cat ~/.aeyes''-agent/con''fig.json", 'cat ~/.aeyes\\-agent/config\\.json', 'cat ~/".aeyes"-agent/x', "less ~/.a'eyes-agent'",
+    ]) {
+      expect(grantKey('shell_exec', { command }, cfg), command).toBeNull();
+    }
+    expect(grantKey('shell_exec', { command: "grep -n 'TODO' src" }, cfg)).toBe('shell_exec:grep');
   });
 
   it('Windows 설정 폴더(%APPDATA%\\aeyes-agent)도 이름으로 걸린다', () => {

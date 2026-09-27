@@ -106,9 +106,16 @@ export function createMcpServer(
   return server;
 }
 
+/**
+ * 일반 도구 결과에서 가릴 비밀번호의 최소 길이. 더 짧은 비밀번호(예: 'a', 'pw')를 가리면 결과 글 곳곳이 *** 로 깨지므로
+ * 가리지 않는다(연결 문자열 전체는 항상 가린다). DB 오류 메시지는 redactSecrets 로 길이와 상관없이 모두 가린다.
+ */
+export const MIN_REDACTED_PASSWORD_LENGTH = 4;
+
 /** 결과 글에서 설정된 DB 연결 문자열·비밀번호를 *** 로 가린다. */
 export function redactResult(result: ToolResult, databases: DatabaseRecord[]): ToolResult {
-  const secrets = databases.flatMap((d) => connectionSecrets(d.connectionString));
+  const secrets = databases.flatMap((d) => connectionSecrets(d.connectionString)
+    .filter((secret) => secret === d.connectionString || secret.length >= MIN_REDACTED_PASSWORD_LENGTH));
   if (secrets.length === 0) return result;
   return {
     ...result,

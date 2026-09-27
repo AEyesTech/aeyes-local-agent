@@ -202,6 +202,22 @@ describe('createMcpServer 결과 가리기(I2)', () => {
     expect(out).toBe('failed with ***');
   });
 
+  it('4자 미만 비밀번호는 일반 결과에서 가리지 않고, 연결 문자열 전체는 가린다((c))', async () => {
+    const { redactResult } = await import('../src/mcp.js');
+    const short = 'postgres://app:pw@db.local:5432/shop';
+    const result = { content: [{ type: 'text' as const, text: `path=/tmp/pwd.txt url=${short} long=p@ss` }] };
+    const out = redactResult(result, [
+      { name: 'shop', kind: 'postgres', connectionString: short, readOnly: true },
+      { name: 'erp', kind: 'mysql', connectionString: my, readOnly: false },
+    ]).content[0] as { text: string };
+    expect(out.text).toBe('path=/tmp/pwd.txt url=*** long=***');
+  });
+
+  it('DB 오류 경로(redactSecrets)는 짧은 비밀번호도 가린다', async () => {
+    const { redactSecrets } = await import('../src/tools/db.js');
+    expect(redactSecrets('auth failed for pw', 'postgres://app:pw@db.local:5432/shop')).toBe('auth failed for ***');
+  });
+
   it('DB 가 없으면 결과를 그대로 둔다', async () => {
     const { redactResult } = await import('../src/mcp.js');
     const result = { content: [{ type: 'text' as const, text: 'hello' }] };
