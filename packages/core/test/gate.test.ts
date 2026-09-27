@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { ConfigStore } from '../src/config.js';
-import { ConfirmationGate, grantKey } from '../src/policy/gate.js';
-import type { Confirmer } from '../src/policy/confirmer.js';
+import { CONFIRM_TIMEOUT_MS, ConfirmationGate, grantKey, InputBlockedError, SESSION_GRANT_TTL_MS, sessionGrantKey } from '../src/policy/gate.js';
+import type { ConfirmDecision, Confirmer } from '../src/policy/confirmer.js';
 
 async function store() {
   const home = await mkdtemp(path.join(tmpdir(), 'aeyes-gate-'));
@@ -122,3 +122,112 @@ describe('ConfirmationGate', () => {
     expect(await gate.check({ ...base, key: 'k' })).toBe(false);
   });
 });
+
+describe('세션 허용·입력 잠금', () => {
+  const input = { tool: 'mouse_click', summary: '클릭', origin: 'https://studio.aeyes.dev', accountLabel: 'a' };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it('입력 도구와 db_query 는 항상 허용 키가 없고, 입력 도구만 세션 키가 있다', () => {
+    for (const tool of ['mouse_move', 'mouse_click', 'keyboard_type', 'keyboard_press', 'db_query']) {
+      expect(grantKey(tool, {}), tool).toBeNull();
+    }
+    expect(sessionGrantKey('mouse_move')).toBe('input');
+    expect(sessionGrantKey('keyboard_press')).toBe('input');
+    expect(sessionGrantKey('shell_exec')).toBeNull();
+    expect(sessionGrantKey('screenshot')).toBeNull();
+    expect(grantKey('screenshot', {})).toBe('screenshot');
+  });
+
+  it('세션 허용은 같은 페어링에만, 설정에 남지 않고 60분 뒤 만료', async () => {
+    const s = await store();
+    let t = 1_000;
+    const confirmer: Confirmer = { confirm: vi.fn(async () => 'session' as const) };
+    const gate = new ConfirmationGate(s, confirmer, CONFIRM_TIMEOUT_MS, () => t);
+    expect(await gate.check({ ...input, key: null, sessionKey: 'input', pairingId: 'p1' })).toBe(true);
+    expect(await gate.check({ ...input, key: null, sessionKey: 'input', pairingId: 'p1' })).toBe(true);
+    expect(confirmer.confirm).toHaveBeenCalledTimes(1);
+    expect(gate.sessionGrantCount()).toBe(1);
+    expect(s.get().alwaysAllow).toEqual([]);
+    await gate.check({ ...input, key: null, sessionKey: 'input', pairingId: 'p2' });
+    expect(confirmer.confirm).toHaveBeenCalledTimes(2);
+    t += SESSION_GRANT_TTL_MS + 1;
+    expect(gate.sessionGrantCount()).toBe(0);
+    await gate.check({ ...input, key: null, sessionKey: 'input', pairingId: 'p1' });
+    expect(confirmer.confirm).toHaveBeenCalledTimes(3);
+  });
+
+  it('세션 허용을 제안하지 않은 요청의 session 답은 이번만 허용', async () => {
+    const s = await store();
+    const seen: Array<boolean | undefined> = [];
+    const gate = new ConfirmationGate(s, { confirm: async (req) => { seen.push(req.sessionAllowed); return 'session'; } });
+    expect(await gate.check({ ...base, key: 'shell_exec:git' })).toBe(true);
+    expect(await gate.check({ ...input, key: null, sessionKey: 'input' })).toBe(true);
+    expect(seen).toEqual([false, false]);
+    expect(gate.sessionGrantCount()).toBe(0);
+  });
+
+  it('세션 허용 가능 요청은 확인기에 sessionAllowed=true 를 넘긴다', async () => {
+    const s = await store();
+    const seen: Array<boolean | undefined> = [];
+    const gate = new ConfirmationGate(s, { confirm: async (req) => { seen.push(req.sessionAllowed); return 'allow'; } });
+    await gate.check({ ...input, key: null, sessionKey: 'input', pairingId: 'p1' });
+    expect(seen).toEqual([true]);
+    expect(gate.sessionGrantCount()).toBe(0);
+  });
+
+  it('clearSessionGrants 는 모두 취소하고 수를 돌려준다', async () => {
+    const s = await store();
+    const gate = new ConfirmationGate(s, { confirm: async () => 'session' });
+    await gate.check({ ...input, key: null, sessionKey: 'input', pairingId: 'p1' });
+    await gate.check({ ...input, key: null, sessionKey: 'input', pairingId: 'p2' });
+    expect(gate.clearSessionGrants()).toBe(2);
+    expect(gate.sessionGrantCount()).toBe(0);
+  });
+
+  it('확인 대기 중에는 입력 동작을 거부한다', async () => {
+    const s = await store();
+    let answer: (d: ConfirmDecision) => void = () => undefined;
+    const gate = new ConfirmationGate(s, { confirm: () => new Promise<ConfirmDecision>((r) => { answer = r; }) });
+    const pending = gate.check({ ...base, key: 'k' });
+    await tick();
+    const fn = vi.fn(async () => 'x');
+    await expect(gate.withInputLock(fn)).rejects.toBeInstanceOf(InputBlockedError);
+    expect(fn).not.toHaveBeenCalled();
+    answer('deny');
+    expect(await pending).toBe(false);
+    await expect(gate.withInputLock(fn)).resolves.toBe('x');
+  });
+
+  it('입력 동작 중에는 확인 창을 입력이 끝난 뒤에 띄운다', async () => {
+    const s = await store();
+    const events: string[] = [];
+    const gate = new ConfirmationGate(s, { confirm: async () => { events.push('confirm'); return 'allow'; } });
+    let finish: () => void = () => undefined;
+    const running = gate.withInputLock(() => new Promise<void>((resolve) => {
+      events.push('input-start');
+      finish = () => { events.push('input-end'); resolve(); };
+    }));
+    await tick();
+    const check = gate.check({ ...base, key: 'k' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events).toEqual(['input-start']);
+    finish();
+    await running;
+    expect(await check).toBe(true);
+    expect(events).toEqual(['input-start', 'input-end', 'confirm']);
+  });
+
+  it('입력 동작끼리는 순서대로 실행한다', async () => {
+    const s = await store();
+    const gate = new ConfirmationGate(s, denyAll());
+    const order: string[] = [];
+    const slow = gate.withInputLock(async () => { await new Promise((r) => setTimeout(r, 20)); order.push('a'); });
+    const fast = gate.withInputLock(async () => { order.push('b'); });
+    await Promise.all([slow, fast]);
+    expect(order).toEqual(['a', 'b']);
+  });
+});
+
+function denyAll(): Confirmer {
+  return { confirm: async () => 'deny' };
+}

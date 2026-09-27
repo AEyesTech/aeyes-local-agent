@@ -31,6 +31,9 @@ export interface AgentOptions {
 export interface RunningAgent {
   port: number;
   pairing: PairingManager;
+  /** "이 세션 동안 허용"을 모두 취소하고 취소한 수를 돌려준다. */
+  clearSessionGrants(): number;
+  sessionGrantCount(): number;
   close(): Promise<void>;
 }
 
@@ -200,6 +203,8 @@ export async function startAgent(opts: AgentOptions): Promise<RunningAgent> {
   return {
     port,
     pairing,
+    clearSessionGrants: () => gate.clearSessionGrants(),
+    sessionGrantCount: () => gate.sessionGrantCount(),
     close: () => new Promise<void>((resolve) => {
       server.closeAllConnections?.();
       server.close(() => resolve());

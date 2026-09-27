@@ -5,6 +5,7 @@ export type ToolErrorCode =
   | 'denied_locally'
   | 'too_large'
   | 'timeout'
+  | 'busy'
   | 'failed';
 
 /** 도구가 모델에 돌려줄 수 있는 예상된 실패. 코드와 짧은 메시지만 담는다. */

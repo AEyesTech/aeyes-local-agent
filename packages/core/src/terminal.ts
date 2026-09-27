@@ -4,6 +4,7 @@
  */
 import { createInterface, type Interface } from 'node:readline';
 import type { ConfirmDecision, Confirmer, ConfirmRequest } from './policy/confirmer.js';
+import { SESSION_GRANT_TTL_MS } from './policy/gate.js';
 
 const SUMMARY_DISPLAY_MAX = 500;
 /** 화면에 떠 있는 확인 외에 줄 세워 둘 수 있는 확인 수. 넘치면(요청 폭주) 새 확인은 즉시 거부한다. */
@@ -120,22 +121,29 @@ export class TerminalIO implements Confirmer {
     const always = req.alwaysAllowed === true && req.grantKey
       ? `  [a] 항상 허용 (범위: ${sanitizeForTerminal(req.grantKey, LABEL_DISPLAY_MAX)})`
       : '';
+    const session = req.sessionAllowed === true
+      ? `  [s] 이 세션 동안 허용(마우스·키보드, ${SESSION_GRANT_TTL_MS / 60_000}분)`
+      : '';
     const account = sanitizeForTerminal(req.accountLabel || 'AeyeStudio', LABEL_DISPLAY_MAX);
     const origin = sanitizeForTerminal(req.origin, LABEL_DISPLAY_MAX);
     this.output.write(
       `\n[확인 필요] ${account} (${origin})\n` +
       `  ${sanitizeForTerminal(req.tool, LABEL_DISPLAY_MAX)}: ${truncateSummaryForDisplay(sanitizeForTerminal(req.summary), SUMMARY_DISPLAY_MAX)}\n` +
-      `  [y] 허용${always}  [N] 거부 > `
+      `  [y] 허용${always}${session}  [N] 거부 > `
     );
   }
 
   private onLine(line: string): void {
     if (this.active) {
       const answer = line.toLowerCase();
-      // "항상 허용"은 요청이 허용 가능하다고 표시한 경우에만 받는다. 아니면 a 는 이번만 허용.
+      // "항상 허용"·"세션 허용"은 요청이 허용 가능하다고 표시한 경우에만 받는다. 아니면 이번만 허용.
       const canAlways = this.active.req.alwaysAllowed === true && !!this.active.req.grantKey;
+      const canSession = this.active.req.sessionAllowed === true;
       const decision: ConfirmDecision =
-        answer === 'y' ? 'allow' : answer === 'a' ? (canAlways ? 'always' : 'allow') : 'deny';
+        answer === 'y' ? 'allow'
+          : answer === 'a' ? (canAlways ? 'always' : 'allow')
+            : answer === 's' ? (canSession ? 'session' : 'allow')
+              : 'deny';
       this.finish(this.active, decision, decision === 'deny' ? '거부했습니다.\n' : '허용했습니다.\n');
       return;
     }

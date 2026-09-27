@@ -6,7 +6,7 @@ export {
 } from './config.js';
 export { startAgent, type AgentOptions, type RunningAgent } from './server.js';
 export { autoAllowConfirmer, denyAllConfirmer, type Confirmer, type ConfirmDecision, type ConfirmRequest } from './policy/confirmer.js';
-export { CONFIRM_TIMEOUT_MS } from './policy/gate.js';
+export { CONFIRM_TIMEOUT_MS, INPUT_TOOLS, SESSION_GRANT_TTL_MS, sessionGrantKey } from './policy/gate.js';
 export { TRUSTED_ORIGINS } from './security/origin.js';
 export type { PairingManager } from './security/pairing.js';
 export { buildDefaultTools } from './tools/index.js';

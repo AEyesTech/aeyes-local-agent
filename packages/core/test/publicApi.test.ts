@@ -6,7 +6,7 @@ describe('공개 API', () => {
     for (const name of [
       'startAgent', 'ConfigStore', 'defaultConfigDir', 'AGENT_VERSION', 'readRunningPid', 'writePidFile', 'removePidFile',
       'isPidAlive', 'PID_FILE', 'unsafeAllowedDirReason', 'sanitizeForTerminal', 'truncateSummaryForDisplay',
-      'MAX_QUEUED_CONFIRMATIONS', 'CONFIRM_TIMEOUT_MS',
+      'MAX_QUEUED_CONFIRMATIONS', 'CONFIRM_TIMEOUT_MS', 'SESSION_GRANT_TTL_MS', 'INPUT_TOOLS', 'sessionGrantKey',
     ]) {
       expect(api, name).toHaveProperty(name);
     }

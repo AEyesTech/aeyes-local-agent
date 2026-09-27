@@ -206,7 +206,10 @@ export async function main(
       } else if (cmd === 'r') {
         let count = 0;
         void store.update((c) => { count = c.alwaysAllow.length; c.alwaysAllow = []; }).then(
-          () => io.output.write(`항상 허용 ${count}개를 지웠습니다. 이제 모두 다시 묻습니다.\n`),
+          () => {
+            const sessions = agent.clearSessionGrants();
+            io.output.write(`항상 허용 ${count}개를 지웠습니다. 이 세션 동안 허용 ${sessions}개도 취소했습니다. 이제 모두 다시 묻습니다.\n`);
+          },
           (error: unknown) => io.error.write(`항상 허용 초기화에 실패했습니다: ${(error as Error)?.message ?? String(error)}\n`)
         );
       } else if (cmd === 'q') void shutdown();
