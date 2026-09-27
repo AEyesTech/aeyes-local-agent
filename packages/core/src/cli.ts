@@ -8,7 +8,8 @@ import { realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { ConfigStore, defaultConfigDir, DEFAULT_PORT, PORT_RANGE_END } from './config.js';
+import { ConfigStore, defaultConfigDir, DEFAULT_PORT, PORT_RANGE_END, type DatabaseKind } from './config.js';
+import { addDatabase, formatDatabaseList, removeDatabase } from './dbCli.js';
 import { autoAllowConfirmer } from './policy/confirmer.js';
 import { unsafeAllowedDirReason } from './paths.js';
 import { readRunningPid, removePidFile, writePidFile } from './pidFile.js';
@@ -17,18 +18,24 @@ import { sanitizeForTerminal, TerminalIO } from './terminal.js';
 import { AGENT_VERSION } from './version.js';
 
 export interface CliArgs {
-  command: 'start' | 'unpair-all' | 'help' | 'version';
+  command: 'start' | 'unpair-all' | 'db-add' | 'db-list' | 'db-remove' | 'help' | 'version';
   port?: number;
   allowDirs: string[];
   dev: boolean;
   autoConfirm: boolean;
   configDir?: string;
+  dbName?: string;
+  dbKind?: DatabaseKind;
+  dbReadWrite?: boolean;
 }
 
 const COMMANDS = 'p = 새 페어링 코드, u = 모든 연결 해제, g = 항상 허용 목록, r = 항상 허용 초기화, q = 종료';
 
 const HELP = `사용법: aeyes-local-agent [옵션]
        aeyes-local-agent unpair --all
+       aeyes-local-agent db add <이름> --kind postgres|mysql [--read-write]
+       aeyes-local-agent db list
+       aeyes-local-agent db remove <이름>
 
 옵션:
   --port <47821-47830>   선호 포트
@@ -38,7 +45,9 @@ const HELP = `사용법: aeyes-local-agent [옵션]
   --auto-confirm         로컬 확인 자동 허용(--dev 에서만)
   --version, --help
 
-실행 중 명령: ${COMMANDS}`;
+실행 중 명령: ${COMMANDS}
+
+DB 연결 문자열은 명령 인자로 받지 않고 실행 후 입력받습니다(화면에 보이지 않음). 새 DB 는 기본 읽기 전용입니다.`;
 
 export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = { command: 'start', allowDirs: [], dev: false, autoConfirm: false };
@@ -48,6 +57,20 @@ export function parseArgs(argv: string[]): CliArgs {
     const next = rest.shift();
     if (next !== '--all') throw new Error('unpair 는 --all 과 함께 써야 합니다');
     args.command = 'unpair-all';
+  }
+  if (rest[0] === 'db') {
+    rest.shift();
+    const sub = rest.shift();
+    if (sub === 'list') {
+      args.command = 'db-list';
+    } else if (sub === 'add' || sub === 'remove') {
+      const name = rest.shift();
+      if (!name || name.startsWith('-')) throw new Error(`db ${sub} 뒤에 DB 이름이 필요합니다`);
+      args.command = sub === 'add' ? 'db-add' : 'db-remove';
+      args.dbName = name;
+    } else {
+      throw new Error('db 명령은 add <이름> | list | remove <이름> 입니다');
+    }
   }
   while (rest.length > 0) {
     const flag = rest.shift()!;
@@ -67,6 +90,13 @@ export function parseArgs(argv: string[]): CliArgs {
       }
       case '--allow-dir': args.allowDirs.push(path.resolve(value())); break;
       case '--config-dir': args.configDir = path.resolve(value()); break;
+      case '--kind': {
+        const kind = value();
+        if (kind !== 'postgres' && kind !== 'mysql') throw new Error('--kind 는 postgres 또는 mysql 입니다');
+        args.dbKind = kind;
+        break;
+      }
+      case '--read-write': args.dbReadWrite = true; break;
       case '--dev': args.dev = true; break;
       case '--auto-confirm': args.autoConfirm = true; break;
       case '--help': case '-h': args.command = 'help'; break;
@@ -74,6 +104,7 @@ export function parseArgs(argv: string[]): CliArgs {
       default: throw new Error(`알 수 없는 인자: ${flag}`);
     }
   }
+  if (args.command === 'db-add' && !args.dbKind) throw new Error('db add 는 --kind postgres|mysql 이 필요합니다');
   return args;
 }
 
@@ -119,6 +150,21 @@ export async function main(
   } catch (e) {
     io.error.write(`${(e as Error).message}\n`);
     return 1;
+  }
+
+  if (args.command === 'db-list') {
+    io.output.write(formatDatabaseList(store.get().databases));
+    return 0;
+  }
+  if (args.command === 'db-add' || args.command === 'db-remove') {
+    const runningPid = await readRunningPid(store.dir);
+    if (runningPid !== null) {
+      io.error.write(`에이전트가 실행 중입니다(pid ${runningPid}). 터미널 에이전트나 데스크톱 앱을 종료한 뒤 다시 실행하세요.\n`);
+      return 1;
+    }
+    return args.command === 'db-add'
+      ? addDatabase(store, { name: args.dbName ?? '', kind: args.dbKind ?? 'postgres', readWrite: args.dbReadWrite === true }, io)
+      : removeDatabase(store, args.dbName ?? '', io);
   }
 
   if (args.command === 'unpair-all') {
