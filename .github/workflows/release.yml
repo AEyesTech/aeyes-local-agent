@@ -62,6 +62,7 @@ jobs:
         run: |
           if [ -z "$HAS_CERT" ]; then echo "::warning::WIN_CSC_LINK 시크릿이 없어 미서명 설치 파일을 만듭니다(SmartScreen 경고)."; fi
       - name: 데스크톱 앱 빌드(mac)
+        shell: bash
         if: matrix.platform == 'mac'
         working-directory: packages/desktop
         env:
@@ -70,14 +71,24 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm exec electron-builder --config electron-builder.config.cjs --mac --publish never
+        # 시크릿이 없으면 빈 문자열이 들어오는데, electron-builder 는 빈 CSC_LINK 를 현재 폴더 경로로 읽어 실패한다("not a file").
+        run: |
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          pnpm exec electron-builder --config electron-builder.config.cjs --mac --publish never
       - name: 데스크톱 앱 빌드(Windows)
+        shell: bash
         if: matrix.platform == 'win'
         working-directory: packages/desktop
         env:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: pnpm exec electron-builder --config electron-builder.config.cjs --win --publish never
+        run: |
+          for v in WIN_CSC_LINK WIN_CSC_KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          pnpm exec electron-builder --config electron-builder.config.cjs --win --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.platform }}
