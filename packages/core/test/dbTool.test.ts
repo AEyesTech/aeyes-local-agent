@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DatabaseRecord } from '../src/config.js';
 import type { DbDriver, DbExecOptions, DbRawResult } from '../src/db/drivers.js';
 import { createDbTools, DB_RESULT_MAX_BYTES, redactSecrets, toCell } from '../src/tools/db.js';
+import { ToolError } from '../src/errors.js';
+import { SUMMARY_DISPLAY_MAX } from '../src/terminal.js';
 import type { ToolContext, ToolResult } from '../src/tools/types.js';
 
 const PG = 'postgres://reader:SECRETPW@db.local:5432/shop';
@@ -92,6 +94,29 @@ describe('db_query 실행', () => {
     expect(execute).toHaveBeenCalledWith('mysql://writer:W2@erp.local/erp', 'UPDATE t SET a = 1', { readOnly: false, cursor: false, maxRows: 200, timeoutMs: 30_000 });
   });
 
+  it('확인 화면에 다 보이지 않는 긴 쓰기 문은 확인 없이 거부한다', async () => {
+    const { tool, execute } = setup();
+    const c = ctx(true);
+    const long = `UPDATE t SET a = '${'x'.repeat(SUMMARY_DISPLAY_MAX)}'`;
+    const r = await tool.run({ database: 'erp', sql: long }, c);
+    expect(body(r).error).toBe('invalid_argument');
+    expect(body(r).message).toBe(`쓰기 문은 확인 화면에 전체가 보이도록 ${SUMMARY_DISPLAY_MAX}자 이하로 나눠 보내세요`);
+    expect(c.confirm).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    // 이스케이프로 늘어나는 제어 문자도 화면 길이로 센다.
+    const ctl = `UPDATE t SET a = '${'\x01'.repeat(150)}'`;
+    expect(ctl.length).toBeLessThan(SUMMARY_DISPLAY_MAX);
+    expect(body(await tool.run({ database: 'erp', sql: ctl }, c)).error).toBe('invalid_argument');
+    // 긴 읽기는 확인이 없으므로 허용한다.
+    await tool.run({ database: 'erp', sql: `SELECT '${'x'.repeat(SUMMARY_DISPLAY_MAX)}'` }, c);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('드라이버의 ToolError(다중 문 연결 거부)는 코드를 유지한다', async () => {
+    const { tool } = setup(new ToolError('invalid_argument', '다중 문을 허용하는 연결은 쓸 수 없습니다'));
+    expect(body(await tool.run({ database: 'shop', sql: 'SELECT 1' }, ctx())).error).toBe('invalid_argument');
+  });
+
   it('없는 DB·다중 문장·빈 SQL 은 invalid_argument', async () => {
     const { tool, execute } = setup();
     const r = await tool.run({ database: 'nope', sql: 'SELECT 1' }, ctx());
@@ -127,6 +152,18 @@ describe('db_query 실행', () => {
     expect(text).not.toContain('db.local');
   });
 
+  it('열 이름도 60KB 예산에 넣는다', async () => {
+    const columns = Array.from({ length: 400 }, (_, i) => `${'c'.repeat(190)}${i}`);
+    const rows = Array.from({ length: 50 }, () => columns.map(() => 1));
+    const { tool } = setup({ columns, rows, rowCount: null, command: 'SELECT', truncated: false });
+    const r = await tool.run({ database: 'shop', sql: 'SELECT * FROM wide' }, ctx());
+    const text = (r.content[0] as { text: string }).text;
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(DB_RESULT_MAX_BYTES + 1024);
+    const out = JSON.parse(text);
+    expect(out.truncated).toBe(true);
+    for (const row of out.rows) expect(row.length).toBe(out.columns.length);
+  });
+
   it('타임아웃 오류는 timeout 코드', async () => {
     const err = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
     const { tool } = setup(err);
@@ -154,6 +191,13 @@ describe('toCell / redactSecrets', () => {
     expect(toCell(Buffer.from([1, 2, 3]))).toBe('<binary 3 bytes>');
     expect(toCell({ a: 1 })).toBe('{"a":1}');
     expect(String(toCell('y'.repeat(3000))).length).toBe(2001);
+  });
+
+  it('password= / pwd= 쿼리 매개변수 값도 가린다', () => {
+    const cs = 'postgres://u@h/db?sslmode=require&password=Q%21PW&x=1';
+    expect(redactSecrets('auth Q!PW and Q%21PW', cs)).toBe('auth *** and ***');
+    const my = 'mysql://u@h/db?pwd=MYPWD';
+    expect(redactSecrets('bad MYPWD', my)).toBe('bad ***');
   });
 
   it('URL 인코딩된 비밀번호도 가린다', () => {

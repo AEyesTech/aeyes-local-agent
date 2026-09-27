@@ -8,6 +8,7 @@ import type { DatabaseRecord } from '../config.js';
 import type { DbDrivers, DbRawResult } from '../db/drivers.js';
 import { classifySql, CURSOR_HEADS } from '../db/sqlGuard.js';
 import { ToolError } from '../errors.js';
+import { sanitizeForTerminal, SUMMARY_DISPLAY_MAX } from '../terminal.js';
 import { defineTool, jsonResult, type ToolDef } from './types.js';
 
 export const DB_DEFAULT_ROWS = 200;
@@ -64,6 +65,11 @@ export function redactSecrets(message: string, connectionString: string): string
   // 마지막 @ 까지 욕심껏 잡는다 — 더 많이 가리는 쪽이 안전하다.
   const loose = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^:@/]*:(.*)@[^@]*$/s.exec(connectionString);
   if (loose) addPassword(loose[1]);
+  // 쿼리 매개변수·키=값 형식의 비밀번호(?password=…, &pwd=…, sslpassword=…).
+  for (const m of connectionString.matchAll(/(?:^|[?&;\s])(?:password|pwd|passwd|sslpassword)=([^&;\s]*)/gi)) {
+    addPassword(m[1]);
+    addPassword(m[1].replace(/\+/g, ' '));
+  }
   let out = message;
   for (const secret of [...secrets].filter((s) => s.length > 0).sort((a, b) => b.length - a.length)) {
     out = out.split(secret).join('***');
@@ -79,10 +85,23 @@ function isTimeout(error: unknown): boolean {
 
 function shapeResult(database: string, raw: DbRawResult, maxRows: number) {
   const rows: unknown[][] = [];
-  let bytes = 0;
   let truncated = raw.truncated || raw.rows.length > maxRows;
+  // 열 이름도 예산에 넣는다. 열이 너무 많으면 예산의 절반까지만 두고, 행도 같은 열 수로 자른다.
+  const columns: string[] = [];
+  let bytes = 2;
+  for (const column of raw.columns) {
+    const name = cut(String(column), COLUMN_NAME_MAX);
+    const size = Buffer.byteLength(JSON.stringify(name)) + 1;
+    if (bytes + size > DB_RESULT_MAX_BYTES / 2) {
+      truncated = true;
+      break;
+    }
+    bytes += size;
+    columns.push(name);
+  }
+  const columnLimit = columns.length < raw.columns.length ? columns.length : Infinity;
   for (const row of raw.rows.slice(0, maxRows)) {
-    const cells = row.map(toCell);
+    const cells = (columnLimit === Infinity ? row : row.slice(0, columnLimit)).map(toCell);
     const size = Buffer.byteLength(JSON.stringify(cells));
     if (bytes + size > DB_RESULT_MAX_BYTES) {
       truncated = true;
@@ -93,7 +112,7 @@ function shapeResult(database: string, raw: DbRawResult, maxRows: number) {
   }
   return {
     database,
-    columns: raw.columns.map((c) => cut(String(c), COLUMN_NAME_MAX)),
+    columns,
     rows,
     rowCount: raw.rowCount,
     command: raw.command,
@@ -133,7 +152,12 @@ export function createDbTools(deps: DbToolDeps): ToolDef[] {
           if (db.readOnly) {
             throw new ToolError('invalid_argument', '읽기 전용 DB 입니다 — SELECT·WITH·SHOW·EXPLAIN 같은 읽기 쿼리만 실행할 수 있습니다');
           }
-          if (!(await ctx.confirm(`DB ${db.name} 쓰기: ${cls.statement}`))) {
+          const summary = `DB ${db.name} 쓰기: ${cls.statement}`;
+          // 확인 화면은 긴 요약의 앞뒤만 보여 준다. 사용자가 쓰기 전체를 보고 허용하도록 화면 길이(이스케이프 후)로 제한한다.
+          if (Array.from(sanitizeForTerminal(summary)).length > SUMMARY_DISPLAY_MAX) {
+            throw new ToolError('invalid_argument', `쓰기 문은 확인 화면에 전체가 보이도록 ${SUMMARY_DISPLAY_MAX}자 이하로 나눠 보내세요`);
+          }
+          if (!(await ctx.confirm(summary))) {
             throw new ToolError('denied_locally', '사용자가 PC 에서 거부했습니다');
           }
         }
@@ -147,6 +171,7 @@ export function createDbTools(deps: DbToolDeps): ToolDef[] {
             timeoutMs: (args.timeoutSec ?? DB_DEFAULT_TIMEOUT_SEC) * 1000,
           });
         } catch (error) {
+          if (error instanceof ToolError) throw new ToolError(error.code, redactSecrets(error.message, db.connectionString));
           const message = error instanceof Error ? error.message : String(error);
           throw new ToolError(isTimeout(error) ? 'timeout' : 'failed', redactSecrets(message, db.connectionString));
         }

@@ -6,7 +6,8 @@ import { createInterface, type Interface } from 'node:readline';
 import type { ConfirmDecision, Confirmer, ConfirmRequest } from './policy/confirmer.js';
 import { SESSION_GRANT_TTL_MS } from './policy/gate.js';
 
-const SUMMARY_DISPLAY_MAX = 500;
+/** 확인 요약을 앞뒤 절반씩 보여 주는 최대 길이. db_query 쓰기 문은 이 안에 다 들어와야 한다. */
+export const SUMMARY_DISPLAY_MAX = 500;
 /** 화면에 떠 있는 확인 외에 줄 세워 둘 수 있는 확인 수. 넘치면(요청 폭주) 새 확인은 즉시 거부한다. */
 export const MAX_QUEUED_CONFIRMATIONS = 10;
 const LABEL_DISPLAY_MAX = 200;

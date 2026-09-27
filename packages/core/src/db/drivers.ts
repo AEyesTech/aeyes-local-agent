@@ -5,6 +5,7 @@
  * - 한 문장만: pg 는 extended 프로토콜(다중 문장 불가), mysql 은 multipleStatements:false.
  */
 import type { DatabaseKind } from '../config.js';
+import { ToolError } from '../errors.js';
 
 export interface DbExecOptions {
   readOnly: boolean;
@@ -79,8 +80,10 @@ export function createPostgresDriver(
         application_name: 'aeyes-local-agent',
       });
       client.on('error', () => undefined);
-      await client.connect();
+      let connected = false;
       try {
+        await client.connect();
+        connected = true;
         await client.query({ text: opts.readOnly ? 'BEGIN TRANSACTION READ ONLY' : 'BEGIN' });
         let result: PgQueryResult;
         if (opts.cursor) {
@@ -99,7 +102,7 @@ export function createPostgresDriver(
           truncated: rows.length > opts.maxRows,
         };
       } catch (error) {
-        await client.query({ text: 'ROLLBACK' }).catch(() => undefined);
+        if (connected) await client.query({ text: 'ROLLBACK' }).catch(() => undefined);
         throw error;
       } finally {
         await client.end().catch(() => undefined);
@@ -116,6 +119,23 @@ interface MysqlConnectionLike {
   query(options: { sql: string; timeout?: number; rowsAsArray?: boolean }): MysqlQueryLike;
   destroy(): void;
   on(event: 'error', listener: (error: Error) => void): unknown;
+  /** mysql2 가 URI 쿼리 매개변수까지 합친 실제 설정. */
+  config?: { multipleStatements?: unknown; clientFlags?: unknown };
+  /** 소켓. destroy() 는 반쯤 닫기(end)라 서버가 계속 보낼 수 있어 상한에서는 소켓도 끊는다. */
+  stream?: { destroy?: () => void };
+}
+
+/** mysql2 CLIENT_MULTI_STATEMENTS 플래그. */
+const MYSQL_MULTI_STATEMENTS_FLAG = 0x00010000;
+
+/**
+ * mysql2 는 URI 쿼리 매개변수를 거짓 값 옵션 위에 덮어쓴다(multipleStatements: false 가
+ * ?multipleStatements=true·?flags=MULTI_STATEMENTS 에 진다). 실제 설정을 확인해 다중 문 연결은 거부한다.
+ */
+function allowsMultipleStatements(conn: MysqlConnectionLike): boolean {
+  const config = conn.config;
+  if (!config || typeof config.clientFlags !== 'number') return true;
+  return config.multipleStatements !== false || (config.clientFlags & MYSQL_MULTI_STATEMENTS_FLAG) !== 0;
 }
 
 export interface MysqlConnectionConfig {
@@ -183,6 +203,11 @@ export function createMysqlDriver(
         bigNumberStrings: true,
       });
       const guard = watchConnection(conn);
+      if (allowsMultipleStatements(conn)) {
+        conn.destroy();
+        conn.stream?.destroy?.();
+        throw new ToolError('invalid_argument', '다중 문(multipleStatements·MULTI_STATEMENTS)을 허용하는 MySQL 연결은 쓸 수 없습니다 — 연결 문자열에서 해당 옵션을 빼세요');
+      }
       let destroyed = false;
       try {
         // MySQL 전용 설정(SELECT 에만 적용). MariaDB 등 없는 서버면 무시하고 클라이언트 timeout 에 맡긴다.
@@ -222,6 +247,7 @@ export function createMysqlDriver(
                   destroyed = true;
                   finish({ columns, rows, rowCount: null, command, truncated: true });
                   conn.destroy();
+                  conn.stream?.destroy?.();
                 }
               } else if (row && typeof row === 'object') {
                 const packet = row as { affectedRows?: unknown };

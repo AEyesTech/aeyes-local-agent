@@ -75,6 +75,24 @@ describe('postgres 드라이버', () => {
     expect(clients[0].queries[1].queryMode).toBe('extended');
   });
 
+  it('연결(connect)이 실패해도 end() 로 닫고, 연결 안 된 클라이언트에 ROLLBACK 을 보내지 않는다', async () => {
+    const state = { ended: false, queries: [] as string[] };
+    const module = {
+      Client: function () {
+        return {
+          connect: async () => { throw new Error('connect ECONNREFUSED'); },
+          query: async (q: PgQuery) => { state.queries.push(q.text); return ok; },
+          end: async () => { state.ended = true; },
+          on: () => undefined,
+        };
+      },
+    } as unknown as PgModuleLike;
+    await expect(createPostgresDriver(async () => module).execute('postgres://h/db', 'SELECT 1', { ...opts, readOnly: true, cursor: true }))
+      .rejects.toThrow('ECONNREFUSED');
+    expect(state.ended).toBe(true);
+    expect(state.queries).toEqual([]);
+  });
+
   it('오류면 ROLLBACK 을 시도하고 연결을 닫은 뒤 다시 던진다', async () => {
     const { module, clients } = fakePg((text) => text.startsWith('SHOW') ? new Error('boom') : ok);
     await expect(createPostgresDriver(async () => module).execute('postgres://h/db', 'SHOW x', { ...opts, readOnly: true, cursor: false })).rejects.toThrow('boom');
@@ -85,12 +103,15 @@ describe('postgres 드라이버', () => {
 
 type Script = Array<[string, ...unknown[]]>;
 
-function fakeMysql(script: (sql: string) => Script) {
-  const state = { statements: [] as string[], destroyed: false, config: {} as Record<string, unknown> };
+function fakeMysql(script: (sql: string) => Script, effective: { multipleStatements: boolean; clientFlags: number } = { multipleStatements: false, clientFlags: 0 }) {
+  const state = { statements: [] as string[], destroyed: false, streamDestroyed: false, config: {} as Record<string, unknown> };
   const module = {
     createConnection: (config: Record<string, unknown>) => {
       state.config = config;
       return {
+        // mysql2 의 실제 연결 설정(URI 쿼리 매개변수가 합쳐진 값).
+        config: effective,
+        stream: { destroy: () => { state.streamDestroyed = true; } },
         query: (options: { sql: string }) => {
           state.statements.push(options.sql);
           const emitter = new EventEmitter();
@@ -120,7 +141,29 @@ describe('mysql 드라이버', () => {
     expect(r).toEqual({ columns: ['a'], rows: [[1], [2]], rowCount: null, command: 'SELECT', truncated: true });
     expect(state.statements).toEqual(['SET SESSION max_execution_time = 5000', 'START TRANSACTION READ ONLY', 'SELECT a FROM t']);
     expect(state.destroyed).toBe(true);
+    // 상한에서 끊을 때 소켓까지 닫아 서버가 더 보내지 않게 한다.
+    expect(state.streamDestroyed).toBe(true);
     expect(state.config).toMatchObject({ uri: 'mysql://h/db', multipleStatements: false, connectTimeout: 10_000 });
+  });
+
+  it('URI 가 다중 문(multipleStatements·MULTI_STATEMENTS 플래그)을 켜면 문장을 보내지 않고 거부한다', async () => {
+    for (const effective of [{ multipleStatements: true, clientFlags: 0 }, { multipleStatements: false, clientFlags: 0x00010000 }]) {
+      const { module, state } = fakeMysql(() => [['end']], effective);
+      const p = createMysqlDriver(async () => module).execute('mysql://u:PW@h/db?multipleStatements=true', 'SELECT 1', { ...opts, readOnly: true, cursor: true });
+      await expect(p).rejects.toMatchObject({ code: 'invalid_argument' });
+      await expect(p).rejects.toThrow(/다중 문/);
+      await p.catch((e: Error) => expect(e.message).not.toContain('PW'));
+      expect(state.statements).toEqual([]);
+      expect(state.destroyed).toBe(true);
+    }
+  });
+
+  it('설정을 확인할 수 없는 연결도 거부한다', async () => {
+    const module = {
+      createConnection: () => ({ query: () => new EventEmitter(), destroy: () => undefined, on: () => undefined }),
+    } as unknown as MysqlModuleLike;
+    await expect(createMysqlDriver(async () => module).execute('mysql://h/db', 'SELECT 1', { ...opts, readOnly: true, cursor: true }))
+      .rejects.toMatchObject({ code: 'invalid_argument' });
   });
 
   it('쓰기: START TRANSACTION + COMMIT, affectedRows', async () => {
@@ -139,6 +182,7 @@ describe('mysql 드라이버', () => {
       createConnection: () => {
         setImmediate(() => conn.emit('error', Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { fatal: true })));
         return {
+          config: { multipleStatements: false, clientFlags: 0 },
           // mysql2 는 콜백 없는 쿼리의 연결 오류를 쿼리가 아니라 연결 error 이벤트로만 알린다.
           query: (options: { sql: string }) => {
             statements.push(options.sql);

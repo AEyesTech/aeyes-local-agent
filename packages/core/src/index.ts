@@ -13,4 +13,4 @@ export { buildDefaultTools } from './tools/index.js';
 export type { ToolDef } from './tools/types.js';
 export { unsafeAllowedDirReason } from './paths.js';
 export { PID_FILE, isPidAlive, readRunningPid, writePidFile, removePidFile } from './pidFile.js';
-export { MAX_QUEUED_CONFIRMATIONS, sanitizeForTerminal, truncateSummaryForDisplay } from './terminal.js';
+export { MAX_QUEUED_CONFIRMATIONS, SUMMARY_DISPLAY_MAX, sanitizeForTerminal, truncateSummaryForDisplay } from './terminal.js';
