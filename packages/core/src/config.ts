@@ -73,7 +73,7 @@ export function defaultAllowedDir(
     const documents = candidates.find((c) => exists(c)) ?? w.join(profile, 'Documents');
     return w.join(documents, 'AeyeStudio');
   }
-  return path.join(home, 'Documents', 'AeyeStudio');
+  return path.posix.join(home, 'Documents', 'AeyeStudio');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

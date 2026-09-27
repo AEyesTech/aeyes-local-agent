@@ -121,7 +121,12 @@ describe('설정 폴더 제외(deniedDirs)', () => {
     await writeFile(path.join(cfg, 'config.json'), '{}');
     await expect(resolveAllowedPath('.aeyes-agent/config.json', [allowed], { deniedDirs: [cfg] })).rejects.toMatchObject({ code: 'path_not_allowed' });
     await expect(resolveAllowedPath('.aeyes-agent/new.txt', [allowed], { deniedDirs: [cfg] })).rejects.toMatchObject({ code: 'path_not_allowed' });
-    await expect(resolveAllowedPath('.AEYES-AGENT', [allowed], { deniedDirs: [cfg] })).rejects.toMatchObject({ code: process.platform === 'linux' ? 'not_found' : 'path_not_allowed' });
+    // 대소문자를 구분하는 Linux 에서는 .AEYES-AGENT 가 설정 폴더와 다른 (아직 없는) 경로라 허용된다.
+    if (process.platform === 'linux') {
+      expect(await resolveAllowedPath('.AEYES-AGENT', [allowed], { deniedDirs: [cfg] })).toBe(path.join(allowed, '.AEYES-AGENT'));
+    } else {
+      await expect(resolveAllowedPath('.AEYES-AGENT', [allowed], { deniedDirs: [cfg] })).rejects.toMatchObject({ code: 'path_not_allowed' });
+    }
     expect(await resolveAllowedPath('a.txt', [allowed], { deniedDirs: [cfg] })).toBe(path.join(allowed, 'a.txt'));
   });
 });
