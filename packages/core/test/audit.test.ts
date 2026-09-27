@@ -13,6 +13,16 @@ describe('summarizeArgs', () => {
     expect(s).not.toContain('rows');
     expect(JSON.parse(s).command).toHaveLength(120);
   });
+
+  it('db_query 는 DB 이름과 SQL 앞 120자만 남긴다', () => {
+    const s = JSON.parse(summarizeArgs({ database: 'shop', sql: 'S'.repeat(300), maxRows: 5 }));
+    expect(s).toEqual({ database: 'shop', sql: 'S'.repeat(120) });
+  });
+
+  it('db_query 요약에 연결 문자열이 들어가지 않는다', () => {
+    const s = summarizeArgs({ database: 'shop', sql: 'SELECT 1', connectionString: 'postgres://u:SECRETPW@h/db' });
+    expect(s).not.toContain('SECRETPW');
+  });
 });
 
 describe('AuditLog', () => {

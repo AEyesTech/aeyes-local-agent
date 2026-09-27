@@ -12,7 +12,7 @@ export interface AuditEntry {
   args: string;
 }
 
-const SUMMARY_FIELDS = ['path', 'from', 'to', 'cwd', 'command', 'name', 'target', 'sheet', 'query'] as const;
+const SUMMARY_FIELDS = ['path', 'from', 'to', 'cwd', 'command', 'name', 'target', 'sheet', 'query', 'database', 'sql'] as const;
 const FIELD_MAX = 120;
 export const AUDIT_MAX_BYTES = 10 * 1024 * 1024;
 

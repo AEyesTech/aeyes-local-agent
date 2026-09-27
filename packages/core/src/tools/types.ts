@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import { ToolError } from '../errors.js';
 
-export type ConfirmRule = 'never' | 'always' | 'overwrite';
+/**
+ * never: 확인 없음. always: 실행 전 항상 확인. overwrite: 덮어쓸 때 도구가 ctx.confirm 호출.
+ * conditional: 도구가 인자를 보고 필요할 때 ctx.confirm 호출(db_query 의 쓰기 쿼리).
+ */
+export type ConfirmRule = 'never' | 'always' | 'overwrite' | 'conditional';
 
 export type ToolContent =
   | { type: 'text'; text: string }
